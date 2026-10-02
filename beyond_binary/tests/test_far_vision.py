@@ -1715,13 +1715,55 @@ class DomainCoherentInventTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "domain_probe_path")
 
-    def test_trial_allows_meet_only_path_neutral_as_fallback(self):
-        """#9: path-neutral meet invent still applies when no exceed is required."""
+    def test_trial_rejects_meet_only_when_exceed_remains(self):
+        """#10: path-neutral meet invent is rejected while an exceed candidate remains."""
         from beyond_binary.seed import seed_same_center
         from beyond_binary import invent as invent_mod
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6)
+        self.assertTrue(invent_mod.search_has_product_exceed_candidate(eng))
+        edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "add_dual",
+                    "cause": "latent",
+                    "effect": "manifest",
+                    "cause_parent": "nothing",
+                    "effect_parent": "something",
+                }
+            ],
+        }
+        ok, pre, post, reason = invent_mod._trial_search_edit(eng, edit)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "meet_only_while_exceed")
+        from beyond_binary import search_substrate as search_mod
+
+        trial = search_mod._clone_engine(eng)
+        self.assertTrue(search_mod.apply_edit_ast(trial, edit["ast"]))
+        # Confirm the edit itself is meet-only vs pre-invent.
+        self.assertEqual(
+            invent_mod.product_exceed_reasons(eng, trial, pre, post),
+            [],
+        )
+
+    def test_trial_allows_meet_only_when_no_exceed_remains(self):
+        """#10: path-neutral meet invent applies only after no exceed remains (C4)."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import search_substrate as search_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        # Consume every remaining product-exceed candidate (rehang + coverage).
+        for _ in range(12):
+            if not invent_mod.search_has_product_exceed_candidate(eng):
+                break
+            rows = search_mod.search_invent_asts(eng, limit=1)
+            self.assertTrue(rows)
+            self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
+        self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
         edit = {
             "kind": "edit_ast",
             "ast": [
@@ -1736,11 +1778,8 @@ class DomainCoherentInventTests(unittest.TestCase):
         }
         ok, pre, post, reason = invent_mod._trial_search_edit(eng, edit)
         self.assertTrue(ok, msg=reason)
-        from beyond_binary import search_substrate as search_mod
-
         trial = search_mod._clone_engine(eng)
         self.assertTrue(search_mod.apply_edit_ast(trial, edit["ast"]))
-        # Meet-only: no product exceed vs pre-invent.
         self.assertEqual(
             invent_mod.product_exceed_reasons(eng, trial, pre, post),
             [],
@@ -1975,7 +2014,7 @@ class DynamicCascadeProbeTests(unittest.TestCase):
 
 
 class ProductiveInventTests(unittest.TestCase):
-    """#9: invent must earn ≥1 product exceed or honestly reject."""
+    """#9/#10: invent must prefer product exceed; meet-only only when none remain."""
 
     def test_search_prefers_productive_rehang(self):
         from beyond_binary.seed import seed_same_center
@@ -1994,6 +2033,68 @@ class ProductiveInventTests(unittest.TestCase):
             ),
             msg=f"expected productive water→hot rehang in { [r.get('why') for r in rows] }",
         )
+
+    def test_search_omits_meet_only_while_exceed_remains(self):
+        """#10: search batch is exceed-only when productive candidates exist."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary.center import LivingCenter as LC
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        self.assertTrue(invent_mod.search_has_product_exceed_candidate(eng))
+        rows = search_mod.search_invent_asts(eng, limit=6)
+        self.assertTrue(rows)
+        pre = LC(eng).score()
+        for row in rows:
+            trial = search_mod._clone_engine(eng)
+            self.assertTrue(search_mod.apply_edit_ast(trial, row["ast"]))
+            exceeds = invent_mod.product_exceed_reasons(
+                eng, trial, pre, LC(trial).score()
+            )
+            self.assertTrue(
+                exceeds,
+                msg=f"meet-only leaked while exceed remains: {row.get('why')}",
+            )
+
+    def test_invent_applies_exceed_not_meet_only(self):
+        """#10: invent_and_embody applies a product exceed when one remains."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import store
+        from beyond_binary import substrate as substrate_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind = Path(tmp) / "mind.json"
+            eng = Engine(
+                seed_same_center(("thermal", "ontology", "optical"), minimal=True)
+            )
+            store.save(eng.torus, mind)
+            LivingCenter(eng).think(6, allow_primary_invent=False)
+            before = invent_mod._probe_answer_path_len(eng, "water")
+            os.environ[substrate_mod.ENV_FLAG] = "search"
+            try:
+                substrate_mod.reset_logs_for_tests()
+                result = invent_mod.invent_and_embody(eng, mind, cycle=1)
+            finally:
+                os.environ.pop(substrate_mod.ENV_FLAG, None)
+                substrate_mod.reset_logs_for_tests()
+            self.assertIsNotNone(result)
+            inv = (result or {}).get("invention") or {}
+            self.assertEqual(inv.get("source"), "search")
+            self.assertTrue(
+                str(inv.get("instance", "")).startswith("rehang-")
+                or "rehang" in str(inv.get("why", "")),
+                msg=inv,
+            )
+            after = invent_mod._probe_answer_path_len(eng, "water")
+            self.assertIsNotNone(before)
+            self.assertIsNotNone(after)
+            self.assertLess(int(after), int(before))
 
     def test_scoreboard_detects_meet_only_invent(self):
         from beyond_binary import product_scoreboard as sb

@@ -791,6 +791,7 @@ def next_invention(
     *,
     activity: list[dict[str, Any]] | None = None,
     journal_rows: list[Any] | None = None,
+    skip_instances: set[str] | None = None,
 ) -> Optional[Invention]:
     registry = refresh_invent_registry(
         eng, mind_store, activity=activity, journal_rows=journal_rows
@@ -801,6 +802,7 @@ def next_invention(
     used_poles = already_used_poles(eng, body_dicts)
     used_instances = already_used_instances(eng, body_dicts)
     alphabet = closed_invent_alphabet(eng, body_dicts)
+    skip = {normalize(x) for x in (skip_instances or ())}
 
     # Prefer high priority; topology > concept > … ; skip abandoned.
     source_order = {
@@ -820,6 +822,8 @@ def next_invention(
     )
 
     for cand in unused:
+        if normalize(cand.instance) in skip:
+            continue
         if cand.source in {"primitive", "concept", "topology", "search"}:
             if cand.source == "topology" and cand.edit and cand.edit.get("kind") == "reparent":
                 # Re-parent uses existing poles — alphabet check on instance only.
@@ -1049,6 +1053,32 @@ def product_exceed_reasons(
     return reasons
 
 
+def search_has_product_exceed_candidate(
+    eng: Engine,
+    *,
+    used_instances: set[str] | None = None,
+    limit: int = 6,
+) -> bool:
+    """#10: True when search still has ≥1 invent AST that earns a product exceed."""
+    from . import search_substrate as search_mod
+    from .center import LivingCenter
+
+    pre = LivingCenter(eng).score()
+    for row in search_mod.search_invent_asts(
+        eng, used_instances=used_instances, limit=limit
+    ):
+        ast = list(row.get("ast") or [])
+        if not ast:
+            continue
+        trial = search_mod._clone_engine(eng)
+        if not search_mod.apply_edit_ast(trial, ast):
+            continue
+        post = LivingCenter(trial).score()
+        if product_exceed_reasons(eng, trial, pre, post):
+            return True
+    return False
+
+
 def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, Any, str]:
     """Trial-apply search edit_ast; return (ok, pre_score, post_score, reason)."""
     from . import search_substrate as search_mod
@@ -1070,9 +1100,11 @@ def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, An
     # #6/#7: probe path length must not regress on any measured probe.
     if not _probe_path_economy_ok(eng, trial):
         return False, pre, post, "probe_path_len"
-    # #9: prefer exceeds via search ranking; path-neutral meet is allowed when
-    # no exceed is available (verify invent_domain must not starve). Scoreboard
-    # still reports product_exceed vs meet_only_invent honestly.
+    # #9/#10: product exceed always ok; meet-only only when no exceed remains (C4).
+    if product_exceed_reasons(eng, trial, pre, post):
+        return True, pre, post, "ok"
+    if search_has_product_exceed_candidate(eng):
+        return False, pre, post, "meet_only_while_exceed"
     return True, pre, post, "ok"
 
 
@@ -1092,10 +1124,17 @@ def invent_and_embody(
     from .center import LivingCenter
 
     # Search invent may reject via score/digest gate; try a few candidates.
+    # #10: defer meet-only (skip, do not abandon) while an exceed candidate remains
+    # so C4 invent_domain can still apply path-neutral meet after exceeds are gone.
     proposal = None
+    skipped_meet_only: set[str] = set()
     for _attempt in range(8):
         proposal = next_invention(
-            eng, mind_store, activity=activity, journal_rows=journal_rows
+            eng,
+            mind_store,
+            activity=activity,
+            journal_rows=journal_rows,
+            skip_instances=skipped_meet_only,
         )
         if proposal is None:
             return None
@@ -1119,7 +1158,11 @@ def invent_and_embody(
             "provenance": "search-substrate:invent",
         }
         store.append_activity([detail], mind_store)
-        mark_abandoned(proposal.instance, mind_store, why=reason)
+        if reason == "meet_only_while_exceed":
+            # Keep candidate available for a later invent once no exceed remains.
+            skipped_meet_only.add(normalize(proposal.instance))
+        else:
+            mark_abandoned(proposal.instance, mind_store, why=reason)
         proposal = None
     if proposal is None:
         return None
