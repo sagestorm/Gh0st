@@ -33,7 +33,26 @@ python3 -m beyond_binary log
 
 Activity log path defaults to `data/torus.center.jsonl` when the store is `data/torus.json`.
 
-## Full cascade seed (optional)
+## Cross-domain, metacognition, embody, autonomy (v0.3)
+
+```bash
+# Other domains on the same Living Center loop
+python3 -m beyond_binary seed-domain ontology --force
+python3 -m beyond_binary think --steps 5
+python3 -m beyond_binary seed-domain optical --force
+python3 -m beyond_binary think --steps 4
+
+# Spawn a body/form registered to the mind
+python3 -m beyond_binary seed-minimal --force
+python3 -m beyond_binary think --steps 3
+python3 -m beyond_binary embody form-a --domain ontology
+python3 -m beyond_binary bodies
+
+# Persistent autonomy (think + metacognize; optional embody)
+python3 -m beyond_binary autonomy --cycles 3 --embody-every 3 --embody-domain optical
+```
+
+`--store PATH` works before or after the subcommand.
 
 ```bash
 python3 -m beyond_binary seed-hot-cold --force
@@ -49,6 +68,10 @@ python3 -m beyond_binary center review hot
 | `init` | Empty torus store |
 | `seed-minimal` | Hot↔cold poles only (for `think` growth) |
 | `seed-hot-cold` | Full first-instance cascade |
+| `seed-domain DOMAIN` | Seed thermal / ontology / optical (minimal poles) |
+| `embody NAME` | Spawn a new body/form torus registered to the mind |
+| `bodies` | List registered bodies |
+| `autonomy` | Persistent think→metacognize→optional embody |
 | `think [--steps N]` | Run N Living Center cycles |
 | `cycle` | One center cycle |
 | `log` / `center-history` | Persisted center activity |
