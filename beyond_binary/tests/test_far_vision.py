@@ -1122,18 +1122,23 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             mind_path = Path(tmp) / "mind.json"
             eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
             store.save(eng.torus, mind_path)
-            # Force a wedge invent candidate ahead of the queue.
+            # Force a domain-matched wedge invent (#5 rejects undomain open/closed).
             reg = invent_mod.load_invent_registry(mind_path)
+            from beyond_binary import lexicon as lex
+
             causes = [
                 n
                 for n in eng.torus.nodes.values()
-                if n.hemisphere is Hemisphere.CAUSE and n.opposite and n.parent
+                if n.hemisphere is Hemisphere.CAUSE
+                and n.opposite
+                and n.parent
+                and (lex.pole_domain(n.parent) == "thermal")
             ]
-            self.assertTrue(causes)
+            self.assertTrue(causes, msg="expected a thermal-parented wedge site")
             child = causes[0]
             parent = eng.torus.nodes[child.parent]
-            cause, effect = "open", "closed"
-            instance = f"search-wedge-g11embody"
+            cause, effect = "sear", "numb"
+            instance = "search-wedge-g11embody"
             edit = {
                 "kind": "edit_ast",
                 "ast": [
@@ -1663,7 +1668,7 @@ class ProductScoreboardTests(unittest.TestCase):
 
 
 class DomainCoherentInventTests(unittest.TestCase):
-    """#4 narrow: no typed cross-domain poles on thermal probe answer paths."""
+    """#4/#5: typed probe paths stay domain-coherent (no foreign/undomain poles)."""
 
     def test_pole_domain_tags_cascade_and_aliases(self):
         from beyond_binary import lexicon as lex
@@ -1681,53 +1686,84 @@ class DomainCoherentInventTests(unittest.TestCase):
         from beyond_binary import invent as invent_mod
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
-        LivingCenter(eng).think(2)
-        # Ontology dual under thermal parent→child lands on water/boiling paths.
+        LivingCenter(eng).think(6)
+        # Ontology dual under thermal parent→child lands on warm probe path.
         edit = {
             "kind": "edit_ast",
             "ast": [
                 {
                     "op": "wedge",
                     "parent": "hot",
-                    "child": "boiling",
-                    "cause": "absence",
-                    "effect": "presence",
+                    "child": "warm",
+                    "cause": "empty",
+                    "effect": "filled",
                 }
             ],
         }
         ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
         self.assertFalse(ok)
-        self.assertEqual(reason, "cross_domain_probe")
+        self.assertEqual(reason, "domain_probe_path")
 
-    def test_trial_allows_undomain_motif_wedge(self):
-        """G11 / existing invent: undomain motifs are not typed cross-domain."""
+    def test_trial_rejects_undomain_motif_wedge_on_thermal_probe_path(self):
+        """#5: undomain motifs under typed thermal parents pollute probe paths."""
         from beyond_binary.seed import seed_same_center
         from beyond_binary import invent as invent_mod
 
-        eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
-        causes = [
-            n
-            for n in eng.torus.nodes.values()
-            if n.hemisphere is Hemisphere.CAUSE and n.opposite and n.parent
-        ]
-        child = causes[0]
-        parent = eng.torus.nodes[child.parent]
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
         edit = {
             "kind": "edit_ast",
             "ast": [
                 {
                     "op": "wedge",
-                    "parent": parent.name,
-                    "child": child.name,
+                    "parent": "hot",
+                    "child": "warm",
                     "cause": "open",
                     "effect": "closed",
                 }
             ],
         }
         ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "domain_probe_path")
+
+    def test_trial_allows_thermal_domain_matched_wedge(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "wedge",
+                    "parent": "hot",
+                    "child": "warm",
+                    "cause": "sear",
+                    "effect": "numb",
+                }
+            ],
+        }
+        ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
         self.assertTrue(ok, msg=reason)
 
-    def test_think_invent_keeps_thermal_probes_free_of_cross_domain(self):
+    def test_mint_under_typed_parent_skips_undomain(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import lexicon as lex
+        from beyond_binary import search_substrate as search_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        pair = search_mod.mint_readable_dual(
+            eng, salt="typed-thermal", require_domain="thermal"
+        )
+        self.assertIsNotNone(pair)
+        cause, effect = pair
+        self.assertEqual(lex.pole_domain(cause), "thermal")
+        self.assertEqual(lex.pole_domain(effect), "thermal")
+
+    def test_think_invent_keeps_thermal_probes_domain_coherent(self):
         import os
         from beyond_binary.seed import seed_same_center
         from beyond_binary import lexicon as lex
@@ -1759,12 +1795,11 @@ class DomainCoherentInventTests(unittest.TestCase):
                             flat.append(str(p))
                     for name in flat:
                         d = lex.pole_domain(name)
-                        if d is not None:
-                            self.assertEqual(
-                                d,
-                                "thermal",
-                                msg=f"probe {topic} path has cross-domain {name!r} ({d})",
-                            )
+                        self.assertEqual(
+                            d,
+                            "thermal",
+                            msg=f"probe {topic} path has non-thermal {name!r} ({d})",
+                        )
             finally:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
                 substrate_mod.reset_logs_for_tests()

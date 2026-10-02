@@ -894,10 +894,10 @@ _PROBE_TOPICS: tuple[str, ...] = ("water", "boiling", "warm")
 
 
 def _thermal_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
-    """#4 narrow: refuse typed cross-domain poles on thermal probe answer paths.
+    """#5: typed probe paths must stay domain-coherent.
 
-    Undomain'd motifs (open/closed, …) are allowed — only a *different*
-    lexicon domain (ontology/optical under thermal probes) is rejected.
+    Thermal probe answer paths may only contain thermal-tagged poles.
+    Undomain'd motifs (open/closed, …) and foreign typed domains are rejected.
     """
     from . import lexicon as lex
     from . import search_substrate as search_mod
@@ -925,7 +925,8 @@ def _thermal_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
                 flat.append(str(p))
         for name in flat:
             d = lex.pole_domain(norm(name))
-            if d is not None and d != "thermal":
+            # Typed foreign domain OR undomain motif on a typed probe path.
+            if d != "thermal":
                 return False
     return True
 
@@ -945,9 +946,9 @@ def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, An
     post = LivingCenter(trial).score()
     if not search_edit_score_acceptable(pre, post):
         return False, pre, post, "score_gate"
-    # #4: no cross-domain pollution of thermal probe answer paths.
+    # #5: no undomain / cross-domain pollution of thermal probe answer paths.
     if not _thermal_probe_domain_ok(eng, trial):
-        return False, pre, post, "cross_domain_probe"
+        return False, pre, post, "domain_probe_path"
     return True, pre, post, "ok"
 
 
