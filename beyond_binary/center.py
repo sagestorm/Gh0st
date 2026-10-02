@@ -21,6 +21,9 @@ MAX_NODES_SOFT_CAP = 24  # domain-capped instance; prune pressure above this
 
 # Reentrancy guard: invent_and_embody → body.think must not nest invent (#2).
 _PRIMARY_PATH_INVENT_DEPTH = 0
+# #13/#14: hard bound on iterative product-exceed invents (think primary path +
+# scoreboard adjunct). Total applied invents per drain ≤ this value.
+MAX_FOLLOW_ON_INVENTS = 8
 
 
 @dataclass
@@ -541,17 +544,32 @@ class LivingCenter:
         return bool(self.strategy.want_invent)
 
     def _maybe_primary_path_invent(self) -> dict[str, Any] | None:
-        """Run one quality-gated invent on the primary path (search only)."""
+        """Run quality-gated invent(s) on the primary path (search only).
+
+        #2: first invent-on-think when strategy wants invent under search.
+        #14: keep applying while ``search_has_product_exceed_candidate`` remains
+        (bounded) — parity with scoreboard iterative follow-on invent.
+        """
         global _PRIMARY_PATH_INVENT_DEPTH
         if not self._prefer_primary_path_invent():
             return None
         # invent_and_embody runs body.think — do not nest invent under search.
         if _PRIMARY_PATH_INVENT_DEPTH > 0:
             return None
+        from . import invent as invent_mod
         from . import mind as mind_mod
 
+        def _applied(row: dict[str, Any] | None) -> bool:
+            return bool(
+                isinstance(row, dict)
+                and row.get("invented") is not False
+                and isinstance(row.get("invention"), dict)
+            )
+
+        last: dict[str, Any] | None = None
         _PRIMARY_PATH_INVENT_DEPTH += 1
         try:
+            # First invent-on-think attempt (may be meet-only when pool empty / C4).
             result = mind_mod.invent_domain(
                 self.engine,
                 self.mind_store,
@@ -559,10 +577,29 @@ class LivingCenter:
                 activity=self.activity,
                 journal_rows=self.journal_entries,
             )
+            self.primary_inventions.append(result)
+            last = result
+            if not _applied(result):
+                return last
+            # #14: drain remaining product-exceed candidates on the primary path.
+            # Hard cap: first invent + follow-ons ≤ MAX_FOLLOW_ON_INVENTS.
+            for step in range(1, MAX_FOLLOW_ON_INVENTS):
+                if not invent_mod.search_has_product_exceed_candidate(self.engine):
+                    break
+                follow = mind_mod.invent_domain(
+                    self.engine,
+                    self.mind_store,
+                    cycle=self._cycle_index + step,
+                    activity=self.activity,
+                    journal_rows=self.journal_entries,
+                )
+                self.primary_inventions.append(follow)
+                last = follow
+                if not _applied(follow):
+                    break
         finally:
             _PRIMARY_PATH_INVENT_DEPTH -= 1
-        self.primary_inventions.append(result)
-        return result
+        return last
 
     def think(
         self, steps: int, *, allow_primary_invent: bool = True
@@ -570,7 +607,7 @@ class LivingCenter:
         if steps < 1:
             raise RuleError("think steps must be >= 1")
         reports = [self.cycle() for _ in range(steps)]
-        # #2: Prefer search invent once per think() behind #1 score/readable gate.
+        # #2/#14: Prefer search invent on think(); iterate while exceed remains.
         # Null path unchanged — helper no-ops unless SearchSubstrate is active.
         # invent_and_embody body warm-up passes allow_primary_invent=False.
         if allow_primary_invent:

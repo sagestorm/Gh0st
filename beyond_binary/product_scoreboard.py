@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .center import LivingCenter, StructuralScore
+from .center import LivingCenter, StructuralScore, MAX_FOLLOW_ON_INVENTS
 from .engine import Engine, normalize
 from .seed import seed_same_center
 from . import invent as invent_mod
@@ -24,8 +24,7 @@ from . import substrate as substrate_mod
 DEFAULT_PROBES: tuple[str, ...] | None = None
 DEFAULT_DOMAINS: tuple[str, ...] = ("thermal", "ontology", "optical")
 DEFAULT_THINK_STEPS = 6
-# #13: bound follow-on invent_domain loops while product-exceed candidates remain.
-MAX_FOLLOW_ON_INVENTS = 8
+# MAX_FOLLOW_ON_INVENTS imported from center (#13/#14 shared hard bound).
 
 
 def _path_names(dual: Any) -> list[str]:
@@ -164,6 +163,7 @@ def _run_arm(
                 probes if probes is not None else invent_mod.product_probes_for(eng)
             )
             # primary_inventions non-empty ⇒ invent-on-think path exercised (#2/#11).
+            # #14: think/primary path may already drain the exceed pool iteratively.
             invent_on_think = bool(center.primary_inventions)
             for row in center.primary_inventions:
                 applied, inst, prov = _record_invent_row(
@@ -178,7 +178,11 @@ def _run_arm(
                     invent_instance = inst
                 if prov:
                     invent_provenance = prov
-            # #13: loop follow-on invent_domain while product exceed remains (bounded).
+            # #14: ≥2 applied primary invents ⇒ iterative invent-on-think drained exceeds.
+            if invent_count >= 2:
+                follow_on_invent = True
+            # #13 safety net: adjunct invent_domain while exceed remains (usually empty
+            # after #14 primary-path drain).
             from . import mind as mind_mod
 
             for _ in range(MAX_FOLLOW_ON_INVENTS):
@@ -425,10 +429,10 @@ def run_scoreboard(
                 "be zero; probe answerability must not regress; typed cross-domain "
                 "or undomain poles must not appear on typed probe answer paths; "
                 "probe path lengths must not exceed Null; search arm exercises "
-                "invent-on-think (iterative follow-on invent_domain while exceed "
+                "invent-on-think (primary-path iterative invent while exceed "
                 "candidates remain, bounded, including invent-motif usable coverage "
-                "after cascade fill) and reports cumulative product_exceed vs "
-                "meet_only_invent"
+                "after cascade fill; scoreboard adjunct safety-net) and reports "
+                "cumulative product_exceed vs meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "
