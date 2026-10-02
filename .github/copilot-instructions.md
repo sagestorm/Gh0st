@@ -1,40 +1,21 @@
-# Copilot Instructions for Gh0st
+# Copilot Instructions for Gh0st / Beyond Binary AI
 
 ## Project Overview
-This project is currently being initialized. As the codebase grows, update these instructions with project-specific patterns and conventions.
+Thin-slice dual-hemisphere antonym graph (cause / effect) with a center navigator and CLI. First seeded instance: hot/cold. Collapse into a single bit is not the endgame.
 
 ## Development Setup
-*To be documented: Required tools, environment setup, dependency installation*
+- Python 3.10+ (stdlib only; no pip deps required for the thin slice)
+- Run CLI: `python3 -m beyond_binary --help`
+- Tests: `python3 -m unittest discover -s beyond_binary/tests -v`
 
 ## Architecture
-*To be documented: Key components, service boundaries, data flow patterns*
-
-## Coding Conventions
-*To be documented: Project-specific patterns that differ from standard practices*
-
-## Key Workflows
-
-### Building
-*To be documented: Build commands and processes*
-
-### Testing
-*To be documented: How to run tests, test structure, coverage expectations*
-
-### Debugging
-*To be documented: Common debugging approaches, tools, and configurations*
-
-## Important Files & Directories
-*To be documented: Key files that exemplify project patterns*
-
-## External Dependencies
-*To be documented: Third-party services, APIs, integration points*
-
-## Common Patterns
-*To be documented: Recurring code patterns with examples from the codebase*
+- `beyond_binary/model.py` — Node, Torus, Hemisphere, CenterAction (provisional cause/effect jobs documented in-module)
+- `beyond_binary/engine.py` — rules: no one-hemisphere answers, orphan→opposite immediately, no duplicates, merge/migrate
+- `beyond_binary/store.py` — JSON persistence (`data/torus.json`)
+- `beyond_binary/seed.py` — hot → boiling → water ↔ condensation cascade
+- `beyond_binary/__main__.py` — CLI
 
 ## Things to Avoid
-*To be documented: Anti-patterns or common mistakes specific to this project*
-
----
-
-**Note for AI Agents**: This file should be updated as the project evolves. Focus on documenting patterns that aren't obvious from code inspection alone, especially the "why" behind architectural decisions.
+- One-hemisphere answers or orphan nodes without opposite-state links
+- Speculative far-vision (sentience, islands poetry) beyond the outline's near path
+- Bit-collapse as an end state
