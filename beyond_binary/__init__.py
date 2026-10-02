@@ -1,6 +1,6 @@
-"""Beyond Binary AI — dual-hemisphere antonym graph with a center navigator.
+"""Beyond Binary AI — dual-hemisphere antonym graph with a Living Center.
 
-Thin slice: cause/effect hemispheres, center process hooks, CLI, hot/cold seed.
+Cause/effect hemispheres, center think/cycle loop, CLI, hot/cold thermal instance.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.16.0"

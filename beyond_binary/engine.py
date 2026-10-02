@@ -20,6 +20,23 @@ class RuleError(ValueError):
     """Raised when a core principle would be violated."""
 
 
+# Sole 1/0/true/false (and kin) are never a valid finish — I1 anti-collapse.
+BIT_COLLAPSE_TOKENS: frozenset[str] = frozenset(
+    {
+        "0",
+        "1",
+        "true",
+        "false",
+        "yes",
+        "no",
+        "bit",
+        "binary",
+        "on",
+        "off",
+    }
+)
+
+
 def normalize(name: str) -> str:
     key = re.sub(r"\s+", " ", name.strip().lower())
     if not key:
@@ -29,6 +46,14 @@ def normalize(name: str) -> str:
 
 def display_name(name: str) -> str:
     return name.strip()
+
+
+def is_bit_collapse_topic(topic: str) -> bool:
+    """True when the topic names a forbidden bit-endgame finish."""
+    try:
+        return normalize(topic) in BIT_COLLAPSE_TOKENS
+    except RuleError:
+        return False
 
 
 @dataclass
@@ -95,6 +120,11 @@ class Engine:
         effect_parent: Optional[str] = None,
     ) -> tuple[Node, Node]:
         """Add an antonym pair across hemispheres and link opposite states."""
+        if is_bit_collapse_topic(cause_name) or is_bit_collapse_topic(effect_name):
+            raise RuleError(
+                f"bit-endgame poles refused: {cause_name!r}/{effect_name!r}; "
+                "opposite-state domains cannot be sole 1/0/true/false finishes"
+            )
         c_key = normalize(cause_name)
         e_key = normalize(effect_name)
         if c_key == e_key:
@@ -350,7 +380,15 @@ class Engine:
         return payload
 
     def answer(self, topic: str) -> DualAnswer:
-        """Trace both hemisphere paths for a topic. Never one side only."""
+        """Trace both hemisphere paths for a topic. Never one side only.
+
+        I1: refuse bit-endgame topics (1/0/true/false/…) as sole valid finish.
+        """
+        if is_bit_collapse_topic(topic):
+            raise RuleError(
+                f"bit-endgame refused: {topic!r} is not a dual-hemisphere finish; "
+                "answers require cause + effect opposite-state paths"
+            )
         node = self.get(topic)
         if not node.opposite:
             raise RuleError(
@@ -373,6 +411,40 @@ class Engine:
             between=between,
             note="Answer resides across both hemispheres; median is the center.",
         )
+
+    def refuse_bit_collapse(self, topic: str | None = None) -> dict:
+        """Explicit anti-collapse: never reduce the mind to a single bit.
+
+        Returns a fail-closed refusal plus dual evidence for a real topic when
+        available (so the caller still sees cause+effect paths).
+        """
+        probe = topic if topic and not is_bit_collapse_topic(topic) else None
+        if probe is None:
+            roots = [
+                n.name
+                for n in self.torus.nodes.values()
+                if n.parent is None and n.hemisphere is Hemisphere.CAUSE
+            ]
+            probe = roots[0] if roots else None
+        dual_payload = None
+        if probe and self.exists(probe):
+            try:
+                dual = self.answer(probe)
+                dual_payload = {
+                    "topic": dual.topic,
+                    "cause_paths": dual.cause_paths,
+                    "effect_paths": dual.effect_paths,
+                    "between": dual.between,
+                }
+            except RuleError:
+                dual_payload = None
+        return {
+            "collapsed": False,
+            "refused": True,
+            "reason": "bit-endgame is not a valid finish; dual paths required",
+            "bit_tokens": sorted(BIT_COLLAPSE_TOKENS),
+            "dual_evidence": dual_payload,
+        }
 
     def structure_lines(self) -> list[str]:
         out = [f"instance: {self.torus.instance}", "", "cause:"]
