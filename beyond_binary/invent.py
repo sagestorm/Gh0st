@@ -893,6 +893,38 @@ def search_edit_score_acceptable(before, after) -> bool:
 _PROBE_TOPICS: tuple[str, ...] = ("water", "boiling", "warm")
 
 
+def _flatten_dual_path_names(dual: Any) -> list[str]:
+    flat: list[str] = []
+    for p in (
+        list(getattr(dual, "cause_paths", None) or [])
+        + list(getattr(dual, "effect_paths", None) or [])
+        + list(getattr(dual, "between", None) or [])
+    ):
+        if isinstance(p, (list, tuple)):
+            flat.extend(str(x) for x in p)
+        else:
+            flat.append(str(p))
+    return flat
+
+
+def _probe_answer_path_len(eng: Engine, topic: str) -> int | None:
+    """Total cause+effect path hop count for a probe; None if missing/unanswerable."""
+    from .engine import RuleError
+
+    if not eng.exists(topic):
+        return None
+    try:
+        dual = eng.answer(topic)
+    except RuleError:
+        return None
+    if not (dual.cause_paths and dual.effect_paths):
+        return None
+    total = 0
+    for p in list(dual.cause_paths or []) + list(dual.effect_paths or []):
+        total += len(p) if isinstance(p, (list, tuple)) else 1
+    return total
+
+
 def _thermal_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
     """#5: typed probe paths must stay domain-coherent.
 
@@ -913,21 +945,25 @@ def _thermal_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
         topic_domain = lex.pole_domain(topic) or search_mod.node_domain(after_eng, topic)
         if topic_domain != "thermal":
             continue
-        flat: list[str] = []
-        for p in (
-            list(after_dual.cause_paths or [])
-            + list(after_dual.effect_paths or [])
-            + list(getattr(after_dual, "between", None) or [])
-        ):
-            if isinstance(p, (list, tuple)):
-                flat.extend(str(x) for x in p)
-            else:
-                flat.append(str(p))
-        for name in flat:
+        for name in _flatten_dual_path_names(after_dual):
             d = lex.pole_domain(norm(name))
             # Typed foreign domain OR undomain motif on a typed probe path.
             if d != "thermal":
                 return False
+    return True
+
+
+def _thermal_probe_path_economy_ok(before_eng: Engine, after_eng: Engine) -> bool:
+    """#6: refuse invent that lengthens thermal probe answer paths."""
+    for topic in _PROBE_TOPICS:
+        before_len = _probe_answer_path_len(before_eng, topic)
+        after_len = _probe_answer_path_len(after_eng, topic)
+        if before_len is None:
+            continue
+        if after_len is None:
+            return False
+        if after_len > before_len:
+            return False
     return True
 
 
@@ -949,6 +985,9 @@ def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, An
     # #5: no undomain / cross-domain pollution of thermal probe answer paths.
     if not _thermal_probe_domain_ok(eng, trial):
         return False, pre, post, "domain_probe_path"
+    # #6: probe path length must not regress.
+    if not _thermal_probe_path_economy_ok(eng, trial):
+        return False, pre, post, "probe_path_len"
     return True, pre, post, "ok"
 
 

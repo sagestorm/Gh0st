@@ -53,6 +53,7 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
     answer_path_digests = 0
     cross_domain_path_poles = 0
     undomain_path_poles = 0
+    probe_path_len_total = 0
     for topic in probes:
         if not eng.exists(topic):
             probe_rows[topic] = {
@@ -61,6 +62,7 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
                 "path_digests": 0,
                 "cross_domain_poles": 0,
                 "undomain_poles": 0,
+                "path_len": None,
             }
             continue
         dual = eng.answer(topic)
@@ -77,14 +79,19 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
                     undomain += 1
                 elif d != topic_domain:
                     cross += 1
+        path_len = 0
+        for p in list(dual.cause_paths or []) + list(dual.effect_paths or []):
+            path_len += len(p) if isinstance(p, (list, tuple)) else 1
         cross_domain_path_poles += cross
         undomain_path_poles += undomain
+        probe_path_len_total += path_len
         probe_rows[topic] = {
             "exists": True,
             "answerable": bool(dual.cause_paths and dual.effect_paths),
             "path_digests": digests,
             "cross_domain_poles": cross,
             "undomain_poles": undomain,
+            "path_len": path_len,
         }
     return {
         "score": score.to_dict(),
@@ -94,6 +101,7 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
         "answer_path_digests": answer_path_digests,
         "cross_domain_path_poles": cross_domain_path_poles,
         "undomain_path_poles": undomain_path_poles,
+        "probe_path_len_total": probe_path_len_total,
         "probes": probe_rows,
         "node_names": sorted(names),
     }
@@ -200,6 +208,15 @@ def evaluate_meet_or_exceed(
         regressions.append(
             f"undomain_path_poles={search_arm.get('undomain_path_poles')} (must be 0)"
         )
+    # #6: probe answer paths must not be longer than Null.
+    if int(search_arm.get("probe_path_len_total") or 0) > int(
+        null_arm.get("probe_path_len_total") or 0
+    ):
+        regressions.append(
+            "probe_path_len_total "
+            f"{search_arm.get('probe_path_len_total')} > null "
+            f"{null_arm.get('probe_path_len_total')}"
+        )
 
     n_probes = null_arm.get("probes") or {}
     s_probes = search_arm.get("probes") or {}
@@ -219,6 +236,12 @@ def evaluate_meet_or_exceed(
         if int(s_row.get("undomain_poles") or 0) > 0:
             regressions.append(
                 f"probe {topic}: undomain_poles={s_row.get('undomain_poles')}"
+            )
+        n_len = n_row.get("path_len")
+        s_len = s_row.get("path_len")
+        if n_len is not None and s_len is not None and int(s_len) > int(n_len):
+            regressions.append(
+                f"probe {topic}: path_len {s_len} > null {n_len}"
             )
 
     return (not regressions), regressions
@@ -273,7 +296,8 @@ def run_scoreboard(
                 "search must meet or exceed Null on dual_coverage, link_symmetry, "
                 "unused_path_cost, readable_name_ratio; answer-path digests must "
                 "be zero; probe answerability must not regress; typed cross-domain "
-                "or undomain poles must not appear on typed probe answer paths"
+                "or undomain poles must not appear on typed probe answer paths; "
+                "probe path lengths must not exceed Null"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "
