@@ -907,6 +907,10 @@ class VerifyFarVisionTests(unittest.TestCase):
             report.get("substrate", {}).get("axes_with_non_stdlib_accepts") or [],
             [],
         )
+        # G1: default/Null stays fail-closed even when eng gates pass.
+        auth = report.get("authorization") or {}
+        self.assertIn("sentience_ok", auth.get("missing") or [])
+        self.assertFalse(auth.get("checklist", {}).get("search_path", True))
 
     def test_verify_sentience_true_when_search_four_axes(self):
         """SENTIENCE.ok only when search substrate covers invent|reflect|goal|form."""
@@ -933,8 +937,17 @@ class VerifyFarVisionTests(unittest.TestCase):
                 msg=by_id["SENTIENCE"]["evidence"],
             )
             self.assertIn("SENTIENCE true", by_id["SENTIENCE"]["evidence"])
-            # Gate may be green; Project goal stays incomplete.
-            self.assertFalse(report["complete"])
+            # G1: search path with eng + SENTIENCE + required gates → complete.
+            self.assertTrue(
+                report["complete"],
+                msg=(
+                    f"missing={report.get('authorization', {}).get('missing')} "
+                    f"note={report.get('note')}"
+                ),
+            )
+            auth = report.get("authorization") or {}
+            self.assertEqual(auth.get("missing") or [], [])
+            self.assertTrue(auth.get("checklist", {}).get("search_path"))
         finally:
             os.environ.pop(substrate_mod.ENV_FLAG, None)
             substrate_mod.reset_logs_for_tests()

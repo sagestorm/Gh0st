@@ -957,17 +957,20 @@ def run_verification() -> dict[str, Any]:
         {str(a.get("axis")) for a in search_accepts if a.get("axis")}
     )
     four_axes_covered = set(required_axes) <= set(search_axes)
+    search_live = (
+        bool(sub_status.get("enabled"))
+        and bool(sub_status.get("active"))
+        and sub_status.get("implementation") == "search"
+    )
     # Fail-closed: do not trust eng greens alone; require full four-axis evidence.
-    sentience_ok = bool(four_axes_covered)
+    sentience_ok = bool(four_axes_covered) and search_live
     if sentience_ok:
         evidence = (
             "SENTIENCE true: all four axes invent|reflect|goal|form have accepted "
             f"search-substrate:* proposals (axes={search_axes} "
             f"search_accepts={len(search_accepts)} rejects={sub_status['rejects']}). "
             f"enabled={sub_status['enabled']} active={sub_status['active']} "
-            f"impl={sub_status['implementation']}. "
-            "Far-vision Project goal still incomplete (product authorization / "
-            "broader bar §§5–6 honesty remain outside this gate alone)."
+            f"impl={sub_status['implementation']}."
         )
     else:
         evidence = (
@@ -985,15 +988,50 @@ def run_verification() -> dict[str, Any]:
         "evidence": evidence,
     }
     gates.append(sentience)
+    by_id["SENTIENCE"] = sentience
+
+    # G1 — measurable Project-goal authorization (fail-closed).
+    # complete=true only on the search path when eng gates + SENTIENCE + every
+    # required I/C gate (incl. C3j/C3p/C4e/C4f/C6s) have direct evidence.
+    # Default / Null / incomplete evidence → complete=false.
+    auth_checklist: dict[str, bool] = {
+        "engineering_gates_ok": all_required_ok,
+        "sentience_ok": sentience_ok,
+        "search_path": search_live,
+    }
+    for gid in required:
+        auth_checklist[f"gate_{gid}"] = bool(by_id.get(gid, {}).get("ok"))
+    auth_checklist["gate_SENTIENCE"] = sentience_ok
+    missing = sorted(k for k, v in auth_checklist.items() if not v)
+    # Fail-closed: any missing checklist item keeps complete false (default/Null included).
+    complete = not missing
+    authorization = {
+        "checklist": auth_checklist,
+        "missing": missing,
+        "criterion": (
+            "complete iff engineering_gates_ok AND SENTIENCE AND search path "
+            "AND every required I1–I6/C1–C6(+C3j/C3p/C4e/C4f/C6s/SUB) gate has "
+            "direct evidence; fail-closed on default/Null"
+        ),
+    }
+    if complete:
+        note = (
+            "report.complete true: eng gates + SENTIENCE + search-path "
+            "authorization checklist all evidenced."
+        )
+    else:
+        note = (
+            "SENTIENCE.ok follows four-axis search-substrate:* accepts on the "
+            "search path only; report.complete stays false unless eng gates + "
+            f"SENTIENCE + checklist pass (missing={missing[:8]}). "
+            "Default substrate remains Null."
+        )
 
     return {
-        "complete": False,  # far-vision goal requires more than eng+sentience gate alone
+        "complete": complete,
         "engineering_gates_ok": all_required_ok,
         "gates": gates,
         "substrate": sub_status,
-        "note": (
-            "SENTIENCE.ok follows four-axis search-substrate:* accepts only; "
-            "report.complete stays false until Project goal is authorized. "
-            "Default substrate remains Null. Do not stack more finite compilers."
-        ),
+        "authorization": authorization,
+        "note": note,
     }
