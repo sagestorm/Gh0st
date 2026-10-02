@@ -135,6 +135,38 @@ def detect_domains(existing_names: Iterable[str]) -> set[str]:
     return found
 
 
+def pole_domain(name: str) -> Optional[str]:
+    """Map a pole label to thermal|ontology|optical via roots, cascades, aliases.
+
+    Returns None for undomain'd invent motifs (chaos/order, open/closed, …).
+    """
+    key = canonical_name(name).strip().lower()
+    if not key:
+        return None
+    for domain, (a, b) in DOMAIN_POLES.items():
+        if key in {a.lower(), b.lower()}:
+            return domain
+    for domain, cascade in DOMAIN_CASCADES.items():
+        for entry in cascade:
+            if key in {
+                entry.cause.lower(),
+                entry.effect.lower(),
+                entry.cause_parent.lower(),
+                entry.effect_parent.lower(),
+            }:
+                return domain
+    alias_domains: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] = (
+        ("thermal", THERMAL_ALIASES),
+        ("ontology", ONTOLOGY_ALIASES),
+        ("optical", OPTICAL_ALIASES),
+    )
+    for domain, groups in alias_domains:
+        for group in groups:
+            if key in {g.lower() for g in group}:
+                return domain
+    return None
+
+
 def pending_expansions(
     existing_names: set[str],
     *,
