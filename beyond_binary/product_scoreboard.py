@@ -52,6 +52,7 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
     probe_rows: dict[str, Any] = {}
     answer_path_digests = 0
     cross_domain_path_poles = 0
+    undomain_path_poles = 0
     for topic in probes:
         if not eng.exists(topic):
             probe_rows[topic] = {
@@ -59,6 +60,7 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
                 "answerable": False,
                 "path_digests": 0,
                 "cross_domain_poles": 0,
+                "undomain_poles": 0,
             }
             continue
         dual = eng.answer(topic)
@@ -67,18 +69,22 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
         answer_path_digests += digests
         topic_domain = lex.pole_domain(topic) or search_mod.node_domain(eng, topic)
         cross = 0
+        undomain = 0
         if topic_domain:
             for n in flat:
                 d = lex.pole_domain(n)
-                # Typed cross-domain only — undomain'd motifs are not counted here.
-                if d is not None and d != topic_domain:
+                if d is None:
+                    undomain += 1
+                elif d != topic_domain:
                     cross += 1
         cross_domain_path_poles += cross
+        undomain_path_poles += undomain
         probe_rows[topic] = {
             "exists": True,
             "answerable": bool(dual.cause_paths and dual.effect_paths),
             "path_digests": digests,
             "cross_domain_poles": cross,
+            "undomain_poles": undomain,
         }
     return {
         "score": score.to_dict(),
@@ -87,6 +93,7 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
         "readable_name_ratio": readable_ratio,
         "answer_path_digests": answer_path_digests,
         "cross_domain_path_poles": cross_domain_path_poles,
+        "undomain_path_poles": undomain_path_poles,
         "probes": probe_rows,
         "node_names": sorted(names),
     }
@@ -184,10 +191,14 @@ def evaluate_meet_or_exceed(
         regressions.append(
             f"digest_node_count={search_arm.get('digest_node_count')} (must be 0)"
         )
-    # #4 narrow: typed cross-domain poles on probe paths are a product regression.
+    # #4/#5: typed cross-domain or undomain poles on probe paths are regressions.
     if int(search_arm.get("cross_domain_path_poles") or 0) > 0:
         regressions.append(
             f"cross_domain_path_poles={search_arm.get('cross_domain_path_poles')} (must be 0)"
+        )
+    if int(search_arm.get("undomain_path_poles") or 0) > 0:
+        regressions.append(
+            f"undomain_path_poles={search_arm.get('undomain_path_poles')} (must be 0)"
         )
 
     n_probes = null_arm.get("probes") or {}
@@ -204,6 +215,10 @@ def evaluate_meet_or_exceed(
         if int(s_row.get("cross_domain_poles") or 0) > 0:
             regressions.append(
                 f"probe {topic}: cross_domain_poles={s_row.get('cross_domain_poles')}"
+            )
+        if int(s_row.get("undomain_poles") or 0) > 0:
+            regressions.append(
+                f"probe {topic}: undomain_poles={s_row.get('undomain_poles')}"
             )
 
     return (not regressions), regressions
@@ -258,7 +273,7 @@ def run_scoreboard(
                 "search must meet or exceed Null on dual_coverage, link_symmetry, "
                 "unused_path_cost, readable_name_ratio; answer-path digests must "
                 "be zero; probe answerability must not regress; typed cross-domain "
-                "poles must not appear on probe answer paths"
+                "or undomain poles must not appear on typed probe answer paths"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "

@@ -95,6 +95,15 @@ DOMAIN_POLES: dict[str, tuple[str, str]] = {
     "optical": ("light", "dark"),
 }
 
+# Readable domain-tagged invent duals that are *not* lexicon aliases.
+# Wedging aliases of existing poles raises unused_path_cost (alias_dups);
+# these motifs give typed-parent invent somewhere to land without undomain pollution.
+DOMAIN_INVENT_MOTIFS: dict[str, tuple[tuple[str, str], ...]] = {
+    "thermal": (("sear", "numb"), ("simmer", "quench"), ("humid", "arid")),
+    "ontology": (("latent", "manifest"),),
+    "optical": (("glare", "gloom"),),
+}
+
 
 def antonym_for(name: str) -> Optional[str]:
     key = name.strip().lower()
@@ -163,6 +172,10 @@ def pole_domain(name: str) -> Optional[str]:
     for domain, groups in alias_domains:
         for group in groups:
             if key in {g.lower() for g in group}:
+                return domain
+    for domain, pairs in DOMAIN_INVENT_MOTIFS.items():
+        for cause, effect in pairs:
+            if key in {cause.lower(), effect.lower()}:
                 return domain
     return None
 

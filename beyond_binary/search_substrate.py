@@ -126,14 +126,37 @@ def _is_ancestor(eng: Engine, ancestor: str, node_name: str) -> bool:
     return False
 
 
-def _readable_dual_pool(eng: Engine, reserved: set[str] | None = None) -> list[tuple[str, str]]:
-    """Unused readable antonym pairs: lexicon aliases, cascade poles, invent motifs."""
+def _readable_dual_pool(
+    eng: Engine,
+    reserved: set[str] | None = None,
+    *,
+    require_domain: str | None = None,
+) -> list[tuple[str, str]]:
+    """Unused readable antonym pairs: lexicon aliases, cascade poles, invent motifs.
+
+    When ``require_domain`` is set (thermal|ontology|optical), only pairs whose
+    both poles carry that lexicon domain are returned — undomain invent motifs
+    and foreign typed duals are excluded (typed-parent invent coherence).
+    Alias-of-existing poles are also excluded under require_domain so invent
+    does not raise unused_path_cost via alias_dups.
+    """
     from . import invent as invent_mod
     from . import lexicon as lex
 
     occupied = _occupied_names(eng, reserved)
     out: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
+
+    def _alias_conflicts_existing(name: str) -> bool:
+        """True when name shares an alias group with a pole already on the torus."""
+        key = normalize(name)
+        for group in lex.alias_groups():
+            gset = {normalize(g) for g in group}
+            if key not in gset:
+                continue
+            if any(normalize(g) in occupied or eng.exists(g) for g in group):
+                return True
+        return False
 
     def _take(cause: str, effect: str) -> None:
         c, e = cause.strip(), effect.strip()
@@ -151,6 +174,13 @@ def _readable_dual_pool(eng: Engine, reserved: set[str] | None = None) -> list[t
             return
         if normalize(c) == normalize(e):
             return
+        if require_domain is not None:
+            dc, de = lex.pole_domain(c), lex.pole_domain(e)
+            if dc != require_domain or de != require_domain:
+                return
+            # Avoid synonym spam that fails the invent score gate.
+            if _alias_conflicts_existing(c) or _alias_conflicts_existing(e):
+                return
         seen.add(key)
         out.append((c, e))
 
@@ -192,9 +222,17 @@ def _readable_dual_pool(eng: Engine, reserved: set[str] | None = None) -> list[t
     for entry in lex.all_cascades():
         _take(entry.cause, entry.effect)
 
-    # 3) Concept / invent motifs — seed INVENTABLE duals unused on this torus.
-    for cause, effect, _instance in invent_mod.INVENTABLE:
-        _take(cause, effect)
+    # 3) Domain-tagged invent motifs (non-alias) — preferred under typed parents.
+    if require_domain is not None:
+        for cause, effect in lex.DOMAIN_INVENT_MOTIFS.get(require_domain, ()):
+            _take(cause, effect)
+    else:
+        for pairs in lex.DOMAIN_INVENT_MOTIFS.values():
+            for cause, effect in pairs:
+                _take(cause, effect)
+        # 4) Undomain seed INVENTABLE — only when parent is untyped.
+        for cause, effect, _instance in invent_mod.INVENTABLE:
+            _take(cause, effect)
 
     return out
 
@@ -204,9 +242,10 @@ def mint_readable_dual(
     *,
     reserved: set[str] | None = None,
     salt: str = "",
+    require_domain: str | None = None,
 ) -> tuple[str, str] | None:
     """Pick one unused readable cause/effect pair; None if the pool is exhausted."""
-    pool = _readable_dual_pool(eng, reserved)
+    pool = _readable_dual_pool(eng, reserved, require_domain=require_domain)
     if not pool:
         return None
     if salt:
@@ -370,10 +409,17 @@ def search_invent_asts(
         parent = eng.torus.nodes[node.parent]
         if parent.hemisphere is not Hemisphere.CAUSE or not parent.opposite:
             continue
+        parent_domain = node_domain(eng, parent.name)
         salt = f"wedge|{normalize(node.name)}|{normalize(parent.name)}"
-        pair = mint_readable_dual(eng, reserved=reserved, salt=salt)
+        pair = mint_readable_dual(
+            eng, reserved=reserved, salt=salt, require_domain=parent_domain
+        )
         if pair is None:
-            break
+            # Typed sites with no matching dual left: skip site (don't fall
+            # back to undomain motifs). Untyped sites may exhaust the pool.
+            if parent_domain is None:
+                break
+            continue
         cause, effect = pair
         dig = _digest("wedge", normalize(node.name), normalize(parent.name), cause, effect)
         instance = f"search-wedge-{dig}"
@@ -421,14 +467,25 @@ def search_invent_asts(
         for c2, e2 in dual_pairs[i + 1 : i + 4]:
             if normalize(c1) == normalize(c2):
                 continue
+            parent_domain = node_domain(eng, c1)
             salt_mid = f"chain-mid|{normalize(c1)}|{normalize(c2)}"
-            mid = mint_readable_dual(eng, reserved=reserved, salt=salt_mid)
+            mid = mint_readable_dual(
+                eng, reserved=reserved, salt=salt_mid, require_domain=parent_domain
+            )
             if mid is None:
-                return out
+                if parent_domain is None:
+                    return out
+                continue
             mid_c, mid_e = mid
             reserved_mid = set(reserved) | {normalize(mid_c), normalize(mid_e)}
             salt_leaf = f"chain-leaf|{normalize(c1)}|{normalize(c2)}|{mid_c}"
-            leaf = mint_readable_dual(eng, reserved=reserved_mid, salt=salt_leaf)
+            # Leaf nests under mid; mid is domain-matched to parent when typed.
+            leaf = mint_readable_dual(
+                eng,
+                reserved=reserved_mid,
+                salt=salt_leaf,
+                require_domain=parent_domain,
+            )
             if leaf is None:
                 reserved.add(normalize(mid_c))
                 reserved.add(normalize(mid_e))
