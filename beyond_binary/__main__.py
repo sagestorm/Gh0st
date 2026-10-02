@@ -349,6 +349,23 @@ def cmd_answer(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_collapse(args: argparse.Namespace) -> int:
+    """I1: refuse bit-endgame collapse; always fail-closed (non-zero)."""
+    eng, _ = _eng(args.store)
+    result = eng.refuse_bit_collapse(args.topic)
+    # Also prove answer() refuses bit tokens under pressure.
+    bit_refusals: dict[str, str] = {}
+    for bit in ("true", "false", "0", "1"):
+        try:
+            eng.answer(bit)
+            bit_refusals[bit] = "UNEXPECTED_OK"
+        except RuleError as exc:
+            bit_refusals[bit] = str(exc)
+    result["answer_bit_refusals"] = bit_refusals
+    print(json.dumps(result, indent=2))
+    return 1  # collapse never succeeds
+
+
 def cmd_center(args: argparse.Namespace) -> int:
     eng, target = _eng(args.store)
     try:
@@ -491,6 +508,12 @@ def build_parser() -> argparse.ArgumentParser:
     bind("migrate-link", "migrate parent/opposite", cmd_migrate, extras=migrate_extras)
     bind("show", "print structure", cmd_show)
     bind("answer", "dual-hemisphere answer", cmd_answer, extras=lambda sp: sp.add_argument("topic"))
+    bind(
+        "collapse",
+        "I1: refuse bit-endgame; dual evidence only (always exits non-zero)",
+        cmd_collapse,
+        extras=lambda sp: sp.add_argument("topic", nargs="?"),
+    )
     bind("center", "center navigation action", cmd_center, extras=lambda sp: (sp.add_argument("action"), sp.add_argument("topic", nargs="?")))
     return p
 

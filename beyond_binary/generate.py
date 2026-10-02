@@ -2,7 +2,8 @@
 
 When lexicon pending is empty, the center may still grow by:
 1. Replaying learned successful pairs from prior cycles (persisted beside the store)
-2. Proposing nested opposite-state children under reciprocal leaf pairs
+2. Synonym-cascade: unused alias antonyms nested under known reciprocal pairs (I5)
+3. Proposing nested opposite-state children under reciprocal leaf pairs
    (more-{name} ↔ more-{opposite}) — bounded, immediately dual-linked
 
 This is still rule-based (no external LLM). It is the bridge past static scripts.
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .engine import Engine, normalize
-from .lexicon import LexEntry, antonym_for
+from .lexicon import LexEntry, alias_groups, antonym_for
 from . import store
 
 
@@ -120,6 +121,63 @@ def pending_learned(
     return out
 
 
+def _alias_group_for(name: str) -> Optional[tuple[str, ...]]:
+    key = normalize(name)
+    for group in alias_groups():
+        if key in {normalize(g) for g in group}:
+            return group
+    return None
+
+
+def synonym_cascade_expansions(eng: Engine, *, limit: int = 4) -> list[LexEntry]:
+    """Nest unused synonym/antonym aliases under known reciprocal pairs (I5).
+
+    Opposite stays opposite-state: alias of cause pairs with alias of effect.
+    These names are not in the fixed DOMAIN_CASCADE child list — growth beyond
+    lexicon playback.
+    """
+    from .model import Hemisphere
+
+    out: list[LexEntry] = []
+    seen: set[tuple[str, str]] = set()
+    for node in eng.torus.nodes.values():
+        if node.hemisphere is not Hemisphere.CAUSE or not node.opposite:
+            continue
+        opp = eng.torus.nodes.get(node.opposite)
+        if opp is None:
+            continue
+        cause_group = _alias_group_for(node.name)
+        effect_group = _alias_group_for(opp.name)
+        if not cause_group or not effect_group:
+            continue
+        unused_c = [
+            a
+            for a in cause_group
+            if not eng.exists(a) and normalize(a) != normalize(node.name)
+        ]
+        unused_e = [
+            a
+            for a in effect_group
+            if not eng.exists(a) and normalize(a) != normalize(opp.name)
+        ]
+        for cause_alias, effect_alias in zip(unused_c, unused_e):
+            key = (normalize(cause_alias), normalize(effect_alias))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                LexEntry(
+                    cause=cause_alias,
+                    effect=effect_alias,
+                    cause_parent=node.name,
+                    effect_parent=opp.name,
+                )
+            )
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def generative_leaf_expansions(eng: Engine, *, limit: int = 4) -> list[LexEntry]:
     """For reciprocal leaf pairs, propose more-{cause} ↔ more-{effect} children."""
     out: list[LexEntry] = []
@@ -164,8 +222,47 @@ def generative_leaf_expansions(eng: Engine, *, limit: int = 4) -> list[LexEntry]
 def pending_generative(
     eng: Engine, *, mind_store: Path | str | None = None, limit: int = 4
 ) -> list[LexEntry]:
-    """Learned first, then leaf generative proposals."""
+    """Learned first, then synonym-cascade, then more-* leaf proposals."""
     learned = pending_learned(eng, mind_store)
     if learned:
         return learned[:limit]
+    syn = synonym_cascade_expansions(eng, limit=limit)
+    if syn:
+        return syn
     return generative_leaf_expansions(eng, limit=limit)
+
+
+def fixed_cascade_child_names() -> set[str]:
+    """Names that appear as cause/effect children in DOMAIN_CASCADES (not poles)."""
+    from . import lexicon
+
+    names: set[str] = set()
+    for cascade in lexicon.DOMAIN_CASCADES.values():
+        for entry in cascade:
+            names.add(normalize(entry.cause))
+            names.add(normalize(entry.effect))
+    return names
+
+
+def synonym_nodes_present(eng: Engine) -> list[str]:
+    """Nodes present that came from alias groups but not fixed cascade children."""
+    fixed = fixed_cascade_child_names()
+    poles = set()
+    for a, b in lexicon_domain_poles():
+        poles.add(normalize(a))
+        poles.add(normalize(b))
+    found: list[str] = []
+    for group in alias_groups():
+        for alias in group:
+            key = normalize(alias)
+            if key in fixed or key in poles:
+                continue
+            if eng.exists(alias):
+                found.append(alias)
+    return sorted(set(found), key=str.lower)
+
+
+def lexicon_domain_poles() -> list[tuple[str, str]]:
+    from . import lexicon
+
+    return list(lexicon.DOMAIN_POLES.values())

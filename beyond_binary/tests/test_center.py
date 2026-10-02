@@ -92,10 +92,13 @@ class NoUnboundedExplosionTests(unittest.TestCase):
         n_after_5 = len(eng.torus.nodes)
         center.think(20)
         n_after_25 = len(eng.torus.nodes)
-        # Soft cap + lexicon finish ⇒ bounded; no duplicate explosion.
-        self.assertLessEqual(n_after_25, LivingCenter(eng).max_nodes_soft_cap)
-        self.assertLessEqual(n_after_25, n_after_5 + 8)  # remaining lexicon pairs only
-        # Unique normalized keys
+        # Soft cap bounds growth (lexicon + synonym + generative); no duplicate keys.
+        self.assertLessEqual(n_after_25, center.effective_soft_cap())
+        self.assertLessEqual(n_after_25, center.max_nodes_soft_cap)
+        # Further think after soft-cap pressure must not explode node count.
+        center.think(10)
+        n_after_35 = len(eng.torus.nodes)
+        self.assertLessEqual(n_after_35, n_after_25 + 4)
         self.assertEqual(len(eng.torus.nodes), len(set(eng.torus.nodes)))
         eng.assert_no_orphans()
 

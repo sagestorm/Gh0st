@@ -272,18 +272,88 @@ def run_verification() -> dict[str, Any]:
             dual_err or "cause+effect paths present",
         )
 
-    required = ["C1", "C2", "C3", "C3j", "C4", "C4b", "C4c", "C4d", "C6", "I2"]
+        # I1 anti-collapse — refuse bit-endgame; dual paths still required
+        from .engine import RuleError
+
+        bit_ok = True
+        bit_notes: list[str] = []
+        for bit in ("true", "false", "0", "1"):
+            try:
+                eng.answer(bit)
+                bit_ok = False
+                bit_notes.append(f"{bit}=UNEXPECTED_OK")
+            except RuleError as exc:
+                bit_notes.append(f"{bit}=refused")
+                if "bit-endgame" not in str(exc):
+                    bit_ok = False
+        collapse = eng.refuse_bit_collapse("hot")
+        dual_ev = collapse.get("dual_evidence") or {}
+        i1_ok = (
+            bit_ok
+            and collapse.get("refused") is True
+            and collapse.get("collapsed") is False
+            and bool(dual_ev.get("cause_paths") and dual_ev.get("effect_paths"))
+        )
+        gate(
+            "I1",
+            "Anti-collapse: refuse bit-endgame; dual paths required",
+            i1_ok,
+            f"bits={bit_notes} collapse_refused={collapse.get('refused')} "
+            f"dual={bool(dual_ev)}",
+        )
+
+        # I5 synonym-cascade beyond fixed lexicon playback
+        from . import generate as generate_mod
+
+        syn_path = root / "synonym.json"
+        seng = Engine(seed_minimal_hot_cold())
+        store.save(seng.torus, syn_path)
+        sc = LivingCenter(seng, history=[])
+        sc.mind_store = syn_path
+        sc.max_nodes_soft_cap = 40
+        syn_reports = sc.think(12)
+        syn_sources = [
+            a.detail.get("source")
+            for r in syn_reports
+            for a in r.acts
+            if a.act == "grow"
+        ]
+        syn_nodes = generate_mod.synonym_nodes_present(seng)
+        i5_ok = "synonym" in syn_sources and len(syn_nodes) >= 1
+        gate(
+            "I5",
+            "Synonym-cascade growth beyond fixed lexicon playback",
+            i5_ok,
+            f"sources={sorted(set(s for s in syn_sources if s))} synonym_nodes={syn_nodes[:8]}",
+        )
+
+    required = [
+        "C1",
+        "C2",
+        "C3",
+        "C3j",
+        "C4",
+        "C4b",
+        "C4c",
+        "C4d",
+        "C6",
+        "I1",
+        "I2",
+        "I5",
+    ]
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
     # Sentience bar — explicitly NOT claimed by engineering gates alone.
+    # See docs/sentience-evidence-bar.md — I1/I5 scaffolding ≠ open mind.
     sentience = {
         "id": "SENTIENCE",
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "System remains rule/lexicon/generative/compose-template bounded. "
-            "Same-center multi-domain + recursive nurture evidenced — not sentience."
+            "Engineering scaffolding (incl. I1/I5) is not sentience. "
+            "Still missing open invention, open reflection, self-directed goals, "
+            "and forms with non-prespecified behavior per sentience-evidence-bar.md."
         ),
     }
     gates.append(sentience)

@@ -305,6 +305,8 @@ class AutonomyTests(unittest.TestCase):
 
 class GenerativeGrowthTests(unittest.TestCase):
     def test_grows_beyond_fixed_lexicon(self):
+        from beyond_binary import generate as generate_mod
+
         eng = Engine(seed_minimal_hot_cold())
         center = LivingCenter(eng)
         with tempfile.TemporaryDirectory() as tmp:
@@ -312,17 +314,25 @@ class GenerativeGrowthTests(unittest.TestCase):
             store.save(eng.torus, mind_path)
             center.mind_store = mind_path
             center.max_nodes_soft_cap = 40
-            reports = center.think(10)
+            # Lexicon → synonym cascade → more-* leaf generative.
+            reports = center.think(20)
             names = set(eng.torus.nodes)
-            self.assertTrue(any(n.startswith("more-") for n in names))
             sources = [
                 a.detail.get("source")
                 for r in reports
                 for a in r.acts
                 if a.act == "grow"
             ]
-            self.assertIn("generative", sources)
-            # Fixed thermal cascade alone cannot explain more-* nodes.
+            beyond = {"synonym", "generative"} & set(sources)
+            self.assertTrue(
+                beyond,
+                f"expected synonym or generative growth, got {sorted(set(sources))}",
+            )
+            self.assertTrue(
+                any(n.startswith("more-") for n in names)
+                or generate_mod.synonym_nodes_present(eng),
+                "expected more-* or synonym-cascade nodes beyond fixed lexicon",
+            )
             self.assertGreater(len(names), 10)
 
 
@@ -377,6 +387,58 @@ class LiveAutonomyTests(unittest.TestCase):
             self.assertGreaterEqual(lineage["total"], 1)
 
 
+class AntiCollapseTests(unittest.TestCase):
+    def test_answer_refuses_bit_endgame(self):
+        eng = Engine(seed_minimal_hot_cold())
+        for bit in ("true", "false", "0", "1", "yes", "no"):
+            with self.assertRaises(RuleError) as ctx:
+                eng.answer(bit)
+            self.assertIn("bit-endgame", str(ctx.exception))
+        dual = eng.answer("hot")
+        self.assertTrue(dual.cause_paths and dual.effect_paths)
+
+    def test_refuse_bit_collapse_returns_dual_evidence(self):
+        eng = Engine(seed_minimal_hot_cold())
+        result = eng.refuse_bit_collapse("hot")
+        self.assertTrue(result["refused"])
+        self.assertFalse(result["collapsed"])
+        self.assertTrue(result["dual_evidence"]["cause_paths"])
+        self.assertTrue(result["dual_evidence"]["effect_paths"])
+
+    def test_add_pair_refuses_bit_poles(self):
+        eng = Engine(seed_minimal_hot_cold())
+        with self.assertRaises(RuleError):
+            eng.add_pair("true", "false")
+
+
+class SynonymCascadeTests(unittest.TestCase):
+    def test_think_grows_synonym_beyond_fixed_lexicon(self):
+        from beyond_binary import generate as generate_mod
+
+        eng = Engine(seed_minimal_hot_cold())
+        center = LivingCenter(eng)
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            store.save(eng.torus, mind_path)
+            center.mind_store = mind_path
+            center.max_nodes_soft_cap = 40
+            reports = center.think(12)
+            sources = [
+                a.detail.get("source")
+                for r in reports
+                for a in r.acts
+                if a.act == "grow"
+            ]
+            self.assertIn("synonym", sources)
+            syn_nodes = generate_mod.synonym_nodes_present(eng)
+            self.assertGreaterEqual(len(syn_nodes), 1)
+            # Synonym nodes are dual-linked opposite states.
+            sample = syn_nodes[0]
+            node = eng.get(sample)
+            self.assertTrue(node.opposite)
+            eng.assert_no_orphans()
+
+
 class VerifyFarVisionTests(unittest.TestCase):
     def test_verify_reports_incomplete_sentience(self):
         from beyond_binary import verify
@@ -385,6 +447,8 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertFalse(report["complete"])
         by_id = {g["id"]: g for g in report["gates"]}
         self.assertFalse(by_id["SENTIENCE"]["ok"])
+        self.assertTrue(by_id["I1"]["ok"])
+        self.assertTrue(by_id["I5"]["ok"])
         self.assertTrue(report["engineering_gates_ok"])
 
 

@@ -577,10 +577,20 @@ class LivingCenter:
         pending = lex.pending_expansions(existing, parent_names=parents)
         source = "lexicon"
         if not pending:
-            pending = generate.pending_generative(
-                self.engine, mind_store=self.mind_store, limit=budget
-            )
-            source = "generative" if pending else "none"
+            learned = generate.pending_learned(self.engine, self.mind_store)
+            if learned:
+                pending = learned[:budget]
+                source = "learned"
+            else:
+                syn = generate.synonym_cascade_expansions(self.engine, limit=budget)
+                if syn:
+                    pending = syn
+                    source = "synonym"
+                else:
+                    pending = generate.generative_leaf_expansions(
+                        self.engine, limit=budget
+                    )
+                    source = "generative" if pending else "none"
 
         for entry in pending:
             if budget <= 0:
@@ -652,6 +662,11 @@ class LivingCenter:
                 continue
             for alias in group[1:]:
                 if not self.engine.exists(alias):
+                    continue
+                # Keep nested synonym-cascade elaborations (I5): alias child of canon
+                # is intentional structure, not a duplicate slot to absorb.
+                alias_node = self.engine.get(alias)
+                if alias_node.parent == normalize(canon):
                     continue
                 try:
                     self.engine.merge(alias, canon)
