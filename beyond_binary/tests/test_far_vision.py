@@ -1479,6 +1479,81 @@ class ProductScoreboardTests(unittest.TestCase):
         self.assertEqual(before, after)
         substrate_mod.reset_logs_for_tests()
 
+    def test_path_names_scans_between_for_digest_poles(self):
+        """Digest poles only in DualAnswer.between must still fail the scoreboard."""
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary.engine import DualAnswer
+
+        digest = "swabcd1234pole"
+        self.assertTrue(search_mod.looks_like_digest_pole(digest))
+        dual = DualAnswer(
+            topic="water",
+            cause_paths=[["water", "boiling"]],
+            effect_paths=[["water", "condensation"]],
+            between=[("water", digest)],
+            note="between-only digest",
+        )
+        flat = sb._path_names(dual)
+        self.assertIn(digest, flat)
+        digests = sum(1 for n in flat if search_mod.looks_like_digest_pole(n))
+        self.assertGreaterEqual(digests, 1)
+        # Meet-or-exceed must reject when answer_path_digests come from between.
+        null = {
+            "score": {
+                "dual_coverage": 1.0,
+                "link_symmetry": 1.0,
+                "unused_path_cost": 0.0,
+                "node_count": 10,
+            },
+            "readable_name_ratio": 1.0,
+            "answer_path_digests": 0,
+            "digest_node_count": 0,
+            "probes": {"water": {"answerable": True, "path_digests": 0}},
+        }
+        search = {
+            "score": {
+                "dual_coverage": 1.0,
+                "link_symmetry": 1.0,
+                "unused_path_cost": 0.0,
+                "node_count": 10,
+            },
+            "readable_name_ratio": 1.0,
+            "answer_path_digests": digests,
+            "digest_node_count": 0,
+            "probes": {"water": {"answerable": True, "path_digests": digests}},
+        }
+        ok, regs = sb.evaluate_meet_or_exceed(null, search, probes=("water",))
+        self.assertFalse(ok)
+        self.assertTrue(any("digest" in r for r in regs))
+
+    def test_scoreboard_preserves_ambient_pending_goals(self):
+        """Nested scoreboard must not wipe verify's pending search-substrate goals."""
+        import os
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
+        sentinel = {"id": "ambient-goal-sentinel", "title": "keep me"}
+        search_mod._PENDING_GOALS.append(dict(sentinel))
+        search_mod._PENDING_INVENT.append({"instance": "ambient-invent-sentinel"})
+        before = substrate_mod.snapshot_logs()
+        self.assertEqual(before["pending"]["goals"][0]["id"], "ambient-goal-sentinel")
+        sb.run_scoreboard()
+        after = substrate_mod.snapshot_logs()
+        self.assertEqual(before, after)
+        self.assertEqual(
+            [g.get("id") for g in search_mod._PENDING_GOALS],
+            ["ambient-goal-sentinel"],
+        )
+        self.assertEqual(
+            [r.get("instance") for r in search_mod._PENDING_INVENT],
+            ["ambient-invent-sentinel"],
+        )
+        substrate_mod.reset_logs_for_tests()
+
 
 if __name__ == "__main__":
     unittest.main()
