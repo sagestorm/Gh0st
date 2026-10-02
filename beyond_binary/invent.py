@@ -1000,7 +1000,8 @@ def invent_and_embody(
     body_eng = Eng(store.load(body_path))
     center = LivingCenter(body_eng)
     center.mind_store = body_path
-    reports = center.think(3)
+    # Body warm-up must not re-enter primary-path invent (#2 / search).
+    reports = center.think(3, allow_primary_invent=False)
     store.save(body_eng.torus, body_path)
     store.append_activity([r.to_dict() for r in reports], body_path)
 

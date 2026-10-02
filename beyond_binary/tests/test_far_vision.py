@@ -1395,6 +1395,113 @@ class ReadableSearchInventGateTests(unittest.TestCase):
                 )
 
 
+class InventOnThinkAutonomyTests(unittest.TestCase):
+    """#2: prefer quality-gated search invent on think/autonomy; Null unchanged."""
+
+    def test_null_think_does_not_invent(self):
+        from beyond_binary.seed import seed_same_center
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
+            store.save(eng.torus, mind_path)
+            center = LivingCenter(eng)
+            center.mind_store = mind_path
+            center.strategy.want_invent = True
+            nodes_before = set(eng.torus.nodes)
+            center.think(4)
+            self.assertEqual(center.primary_inventions, [])
+            # Null path must not apply invent via think even if want_invent.
+            activity = store.load_activity(mind_path)
+            invent_rejects = [
+                a for a in activity if a.get("act") == "search_invent_reject"
+            ]
+            self.assertEqual(invent_rejects, [])
+            # Bodies registry stays empty (no invent_and_embody).
+            from beyond_binary import bodies
+
+            self.assertEqual(bodies.load_registry(mind_path).bodies, [])
+            _ = nodes_before
+
+    def test_search_think_prefers_quality_gated_invent(self):
+        from beyond_binary.seed import seed_same_center
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary import bodies
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                mind_path = Path(tmp) / "mind.json"
+                eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
+                store.save(eng.torus, mind_path)
+                center = LivingCenter(eng)
+                center.mind_store = mind_path
+                # Drive want_invent like live(invent_every=0); think then invents under search.
+                center.strategy.want_invent = True
+                center.think(5)
+                self.assertTrue(
+                    center.primary_inventions,
+                    msg="search think should attempt primary-path invent when want_invent",
+                )
+                row = center.primary_inventions[0]
+                # Quality gate may reject all candidates → invented=False is honest.
+                if row.get("invented"):
+                    inv = row.get("invention") or {}
+                    self.assertTrue(
+                        str(inv.get("source", "")).startswith("search")
+                        or inv.get("source") == "search"
+                        or "search-substrate" in str(row.get("provenance", "")),
+                        msg=f"expected search invent provenance: {row}",
+                    )
+                    for name in eng.torus.nodes:
+                        self.assertFalse(
+                            search_mod.looks_like_digest_pole(name),
+                            msg=f"digest pole after think invent: {name}",
+                        )
+                else:
+                    # Fail-closed reject path still records the attempt.
+                    self.assertIn("reason", row)
+                # Autonomy surfaces inventions from the same primary path.
+                center2 = LivingCenter(Engine(store.load(mind_path)))
+                center2.mind_store = mind_path
+                result = center2.autonomy(3, mind_store=mind_path)
+                self.assertIn("inventions", result)
+                self.assertTrue(isinstance(result["inventions"], list))
+                _ = bodies
+        finally:
+            os.environ.pop(substrate_mod.ENV_FLAG, None)
+            substrate_mod.reset_logs_for_tests()
+
+    def test_substrate_one_keeps_null_no_think_invent(self):
+        """BEYOND_BINARY_SUBSTRATE=1 stays Null — no invent on think."""
+        from beyond_binary.seed import seed_same_center
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ[substrate_mod.ENV_FLAG] = "1"
+        substrate_mod.reset_logs_for_tests()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                mind_path = Path(tmp) / "mind.json"
+                eng = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
+                store.save(eng.torus, mind_path)
+                center = LivingCenter(eng)
+                center.mind_store = mind_path
+                center.strategy.want_invent = True
+                center.think(3)
+                self.assertEqual(center.primary_inventions, [])
+        finally:
+            os.environ.pop(substrate_mod.ENV_FLAG, None)
+            substrate_mod.reset_logs_for_tests()
+
+
 class ProductScoreboardTests(unittest.TestCase):
     """#3: honest Null-vs-search product scoreboard (verify adjunct + CLI)."""
 

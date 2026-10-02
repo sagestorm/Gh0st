@@ -89,7 +89,9 @@ def nurture(
 
         center = LivingCenter(eng, history=store.load_activity(body.store_path))
         center.mind_store = body.store_path
-        cycle_reports = center.think(steps)
+        # Nurture already invents via invent_and_embody; do not also fire #2
+        # primary-path invent on nested body think (avoids edit cycles under search).
+        cycle_reports = center.think(steps, allow_primary_invent=False)
         store.save(eng.torus, body.store_path)
         store.append_activity([r.to_dict() for r in cycle_reports], body.store_path)
 

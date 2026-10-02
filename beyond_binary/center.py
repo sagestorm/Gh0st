@@ -19,6 +19,9 @@ from .model import CenterAction, Hemisphere, Node
 MAX_NEW_PAIRS_PER_CYCLE = 1
 MAX_NODES_SOFT_CAP = 24  # domain-capped instance; prune pressure above this
 
+# Reentrancy guard: invent_and_embody → body.think must not nest invent (#2).
+_PRIMARY_PATH_INVENT_DEPTH = 0
+
 
 @dataclass
 class ActRecord:
@@ -161,6 +164,8 @@ class LivingCenter:
         self.journal_entries: list[journal.JournalEntry] = []
         self.strategy = Strategy(grow_budget=max_new_pairs_per_cycle)
         self.mind_store: Any = None  # optional path for learned/body/journal persistence
+        # #2: invents fired from think/autonomy under search (Null stays empty).
+        self.primary_inventions: list[dict[str, Any]] = []
         if history:
             self.sync_cycle_index(history)
             self.strategy = self.metacognize(history)
@@ -511,10 +516,66 @@ class LivingCenter:
             journal.append_journal([entry], self.mind_store)
         return report
 
-    def think(self, steps: int) -> list[CycleReport]:
+    def _search_invent_on_primary_path(self) -> bool:
+        """#2: think/autonomy may invent only when SearchSubstrate is bound.
+
+        Null / unset / ``BEYOND_BINARY_SUBSTRATE=1`` stay fail-closed (no invent).
+        """
+        from . import substrate as substrate_mod
+
+        if self.mind_store is None:
+            return False
+        if not substrate_mod.is_active():
+            return False
+        return substrate_mod.substrate_impl_name() == "search"
+
+    def _prefer_primary_path_invent(self) -> bool:
+        """Prefer invent on think/autonomy under search when strategy wants invent.
+
+        Mirrors ``live`` (``invent_every==0 and want_invent``). Search candidate
+        ranking still prefers search sources inside invent; Null stays closed.
+        Quality gate in ``invent_and_embody`` still decides apply vs reject.
+        """
+        if not self._search_invent_on_primary_path():
+            return False
+        return bool(self.strategy.want_invent)
+
+    def _maybe_primary_path_invent(self) -> dict[str, Any] | None:
+        """Run one quality-gated invent on the primary path (search only)."""
+        global _PRIMARY_PATH_INVENT_DEPTH
+        if not self._prefer_primary_path_invent():
+            return None
+        # invent_and_embody runs body.think — do not nest invent under search.
+        if _PRIMARY_PATH_INVENT_DEPTH > 0:
+            return None
+        from . import mind as mind_mod
+
+        _PRIMARY_PATH_INVENT_DEPTH += 1
+        try:
+            result = mind_mod.invent_domain(
+                self.engine,
+                self.mind_store,
+                cycle=self._cycle_index,
+                activity=self.activity,
+                journal_rows=self.journal_entries,
+            )
+        finally:
+            _PRIMARY_PATH_INVENT_DEPTH -= 1
+        self.primary_inventions.append(result)
+        return result
+
+    def think(
+        self, steps: int, *, allow_primary_invent: bool = True
+    ) -> list[CycleReport]:
         if steps < 1:
             raise RuleError("think steps must be >= 1")
-        return [self.cycle() for _ in range(steps)]
+        reports = [self.cycle() for _ in range(steps)]
+        # #2: Prefer search invent once per think() behind #1 score/readable gate.
+        # Null path unchanged — helper no-ops unless SearchSubstrate is active.
+        # invent_and_embody body warm-up passes allow_primary_invent=False.
+        if allow_primary_invent:
+            self._maybe_primary_path_invent()
+        return reports
 
     def autonomy(
         self,
@@ -524,11 +585,15 @@ class LivingCenter:
         embody_domain: str = "ontology",
         mind_store: Any = None,
     ) -> dict[str, Any]:
-        """Persistent loop: metacognize → think cycles → optional embody (C6)."""
+        """Persistent loop: metacognize → think cycles → optional embody (C6).
+
+        Under search substrate, ``think`` may fire quality-gated invent (#2).
+        """
         from . import bodies
 
         if mind_store is not None:
             self.mind_store = mind_store
+        before_inv = len(self.primary_inventions)
         reports = self.think(cycles)
         embodied = None
         if embody_every and cycles >= embody_every:
@@ -546,6 +611,7 @@ class LivingCenter:
             "cycles": [r.to_dict() for r in reports],
             "strategy": self.strategy.to_dict(),
             "embodied": embodied,
+            "inventions": list(self.primary_inventions[before_inv:]),
         }
 
     def live(
