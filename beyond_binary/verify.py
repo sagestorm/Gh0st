@@ -164,11 +164,36 @@ def run_verification() -> dict[str, Any]:
         ]
         sg = journal_mod.strategy_from_journal(j_grow, max_new_pairs=1)
         sp = journal_mod.strategy_from_journal(j_prune, max_new_pairs=1)
+        c3j_ok = bool(sg and sp and sg.get("reason") != sp.get("reason"))
+        c3j_extra = ""
+        from . import substrate as _sub_c3j
+
+        if _sub_c3j.is_active() and _sub_c3j.substrate_impl_name() == "search":
+            # G8: under search, hint-table alone is not bar §2 open reflection.
+            from . import policy as policy_mod
+
+            jpath = root / "c3j-search.json"
+            jeng = Engine(seed_minimal_hot_cold())
+            store.save(jeng.torus, jpath)
+            jc = LivingCenter(jeng, history=[])
+            jc.mind_store = jpath
+            jc.think(6)
+            jpol = policy_mod.load_policy(jpath)
+            expr_kinds = [
+                k
+                for k, v in jpol.condition_kinds.items()
+                if isinstance(v, dict) and v.get("kind") == "expr_ast"
+            ]
+            expr_fire = [
+                r for r in jpol.rules if r.enabled and r.when in set(expr_kinds)
+            ]
+            c3j_ok = c3j_ok and len(expr_kinds) >= 1 and len(expr_fire) >= 1
+            c3j_extra = f" expr_ast={expr_kinds[:2]} expr_rules={len(expr_fire)}"
         gate(
             "C3j",
             "Reflective journal changes strategy (not counters alone)",
-            bool(sg and sp and sg.get("reason") != sp.get("reason")),
-            f"grow={sg and sg.get('reason')} prune={sp and sp.get('reason')}",
+            c3j_ok,
+            f"grow={sg and sg.get('reason')} prune={sp and sp.get('reason')}{c3j_extra}",
         )
 
         # Cross-body synthesize
@@ -501,6 +526,14 @@ def run_verification() -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             dual_ok = False
         topology_ok = topology_ok and dual_ok
+        from . import substrate as _sub_topo
+
+        search_live_topo = (
+            _sub_topo.is_active() and _sub_topo.substrate_impl_name() == "search"
+        )
+        if search_live_topo:
+            # G7: under search, closed bridge/reparent alone does not clear open invent.
+            topology_ok = topology_ok and is_search_invent
         gate(
             "C4e",
             "Topology invent: cross-domain bridge/re-parent (not motif digests)",
@@ -510,6 +543,7 @@ def run_verification() -> dict[str, Any]:
                 f"edit={edit_p.get('kind')} "
                 f"from={edit_p.get('domain_from')}→{edit_p.get('domain_to')} "
                 f"applied={inv_p.get('topology_applied')} dual_ok={dual_ok} "
+                f"search_invent={is_search_invent} "
                 f"alphabet_absent={normalize_absent(cause_p, alphabet_before)}"
             ),
         )
@@ -567,6 +601,22 @@ def run_verification() -> dict[str, Any]:
             and pc.strategy.from_policy
             and (":meta_isa:" in reason or pc.strategy.meta_isa)
         )
+        from . import substrate as _sub_pol
+
+        search_live_pol = (
+            _sub_pol.is_active() and _sub_pol.substrate_impl_name() == "search"
+        )
+        expr_ast_kinds = [
+            k
+            for k, v in pol.condition_kinds.items()
+            if isinstance(v, dict) and v.get("kind") == "expr_ast"
+        ]
+        expr_rules = [
+            r for r in pol.rules if r.enabled and r.when in set(expr_ast_kinds)
+        ]
+        if search_live_pol:
+            # G7: under search, finite meta_prim menus alone do not clear open reflection.
+            pol_ok = pol_ok and len(expr_ast_kinds) >= 1 and len(expr_rules) >= 1
         gate(
             "C3p",
             "Metacognition extends its own meta-ISA with new opcodes",
@@ -575,6 +625,7 @@ def run_verification() -> dict[str, Any]:
                 f"updates={pol.updates} meta_isa_revisions={pol.meta_isa_revisions} "
                 f"meta_prims={meta_prims[:3]} uses_ext={uses_ext[:2]} "
                 f"disk_meta={disk_meta[:3]} observed={pol.observed_signals[:6]} "
+                f"expr_ast={expr_ast_kinds[:3]} expr_rules={len(expr_rules)} "
                 f"learned={len(learned_rules)} reason={reason}"
             ),
         )
