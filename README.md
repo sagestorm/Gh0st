@@ -1,8 +1,8 @@
 # Beyond Binary AI
 
-Thin-slice dual-hemisphere antonym graph: **cause** / **effect** hemispheres, a **center** navigator, and a CLI. First seeded instance: **hot / cold**.
+Dual-hemisphere antonym graph with a **Living Center**: cause / effect hemispheres, a median navigator that grows and maintains structure, and a CLI. First instance: **hot / cold** (thermal domain).
 
-Living outline (project store): see coordinator docs for intent and rules. Collapse into a single bit is not the endgame; answers always span both hemispheres.
+Collapse into a single bit is not the endgame. Answers always span both hemispheres. Orphans link to an opposite state immediately. Growth is paired with dedupe and prune.
 
 ## Setup
 
@@ -12,29 +12,46 @@ Python 3.10+ (stdlib only). From the repo root:
 python3 -m beyond_binary --help
 ```
 
-## Quick start
+## Living Center quick start (from minimal seed)
 
 ```bash
-# Load the first hot/cold synonym cascade into data/torus.json
-python3 -m beyond_binary seed-hot-cold --force
+# Poles only — hot ↔ cold
+python3 -m beyond_binary seed-minimal --force
 
-# Show both hemispheres + opposite-state links
+# Center cycles: review → repair → grow → dedupe → synthesize → challenge → migrate → prune → log
+python3 -m beyond_binary think --steps 5
+
+# Grown dual structure (boiling/freezing/water/condensation, …)
 python3 -m beyond_binary show
 
-# Dual-hemisphere answer (never one side only)
+# Dual-hemisphere answer
 python3 -m beyond_binary answer water
 
-# Center navigation hooks
-python3 -m beyond_binary center review hot
-python3 -m beyond_binary center challenge boiling
+# Inspect center activity (persisted beside the torus JSON)
+python3 -m beyond_binary log
 ```
 
-## CLI (minimum useful set)
+Activity log path defaults to `data/torus.center.jsonl` when the store is `data/torus.json`.
+
+## Full cascade seed (optional)
+
+```bash
+python3 -m beyond_binary seed-hot-cold --force
+python3 -m beyond_binary show
+python3 -m beyond_binary answer water
+python3 -m beyond_binary center review hot
+```
+
+## CLI
 
 | Command | Purpose |
 |---------|---------|
 | `init` | Empty torus store |
-| `seed-hot-cold` | First instance cascade |
+| `seed-minimal` | Hot↔cold poles only (for `think` growth) |
+| `seed-hot-cold` | Full first-instance cascade |
+| `think [--steps N]` | Run N Living Center cycles |
+| `cycle` | One center cycle |
+| `log` / `center-history` | Persisted center activity |
 | `add-pair CAUSE EFFECT` | Antonym pair across hemispheres |
 | `add-under PARENT CHILD` | Nest under a pole; links opposite immediately |
 | `link-opposite A B` | Cross-hemisphere opposite-state link |
@@ -42,16 +59,17 @@ python3 -m beyond_binary center challenge boiling
 | `migrate-link NODE [--parent P] [--opposite O]` | Proven better links |
 | `show` | Print structure |
 | `answer TOPIC` | Trace both hemisphere paths |
-| `center ACTION [TOPIC]` | review / synthesize / challenge / experiment / add / prune / retrieve / save |
+| `center ACTION [TOPIC]` | Manual center act: review / synthesize / challenge / experiment / add / prune / retrieve / save |
 
 Store path defaults to `data/torus.json` (override with `--store PATH`).
 
 ## Core rules (enforced)
 
-- No one-hemisphere answers — `answer` and topic-bearing `center` acts require an opposite-state link.
-- Orphans must link opposite immediately — `add-under` creates or binds an opposite; `assert_no_orphans` after merge/migrate.
-- No duplicates — normalized names; use `merge` / `migrate-link` instead of pile-on.
-- Simple → complex without collapse — nesting under poles + mutable opposite links.
+- **Dual answers** — `answer` and topic-bearing center acts require an opposite-state link across hemispheres.
+- **Orphan → opposite immediately** — `add-under` and each `think` cycle repair orphans.
+- **No duplicates** — normalized names; center dedupe merges lexicon aliases; use `merge` / `migrate-link` instead of pile-on.
+- **Economy** — each cycle pairs grow with dedupe/prune; domain-capped thermal lexicon; soft node cap.
+- **Mutable organization** — experiment/migrate keeps a change only when provisional structural score does not regress.
 
 ## Provisional hemisphere jobs
 

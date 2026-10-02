@@ -2,7 +2,11 @@
 
 Usage:
   python -m beyond_binary init [--store PATH]
+  python -m beyond_binary seed-minimal [--store PATH]
   python -m beyond_binary seed-hot-cold [--store PATH]
+  python -m beyond_binary think [--steps N] [--store PATH]
+  python -m beyond_binary cycle [--store PATH]
+  python -m beyond_binary log [--store PATH] [--limit N]
   python -m beyond_binary add-pair CAUSE EFFECT [--store PATH]
   python -m beyond_binary add-under PARENT CHILD [--opposite NAME] [--opposite-parent P] [--opposite-name N]
   python -m beyond_binary link-opposite A B
@@ -21,9 +25,10 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .center import LivingCenter
 from .engine import Engine, RuleError
 from .model import CenterAction, Torus
-from .seed import seed_hot_cold
+from .seed import seed_hot_cold, seed_minimal_hot_cold
 from . import store
 
 
@@ -39,7 +44,23 @@ def cmd_init(args: argparse.Namespace) -> int:
         return 1
     torus = Torus(instance="empty")
     store.save(torus, target)
+    if args.force:
+        store.clear_activity(target)
     print(f"initialized empty torus at {target}")
+    return 0
+
+
+def cmd_seed_minimal(args: argparse.Namespace) -> int:
+    target = store.store_path(args.store)
+    if target.exists() and not args.force:
+        print(f"already exists: {target} (use --force to overwrite)", file=sys.stderr)
+        return 1
+    torus = seed_minimal_hot_cold()
+    store.save(torus, target)
+    store.clear_activity(target)
+    print(f"seeded minimal hot↔cold at {target}")
+    eng = Engine(torus)
+    print("\n".join(eng.structure_lines()))
     return 0
 
 
@@ -50,9 +71,58 @@ def cmd_seed(args: argparse.Namespace) -> int:
         return 1
     torus = seed_hot_cold()
     store.save(torus, target)
+    store.clear_activity(target)
     print(f"seeded hot/cold cascade at {target}")
     eng = Engine(torus)
     print("\n".join(eng.structure_lines()))
+    return 0
+
+
+def cmd_think(args: argparse.Namespace) -> int:
+    eng, target = _eng(args.store)
+    if not eng.torus.nodes:
+        print(
+            "error: empty torus — run seed-minimal (or add-pair hot cold) first",
+            file=sys.stderr,
+        )
+        return 1
+    center = LivingCenter(eng)
+    reports = center.think(args.steps)
+    store.save(eng.torus, target)
+    log_path = store.append_activity([r.to_dict() for r in reports], target)
+    for report in reports:
+        grown = next((a for a in report.acts if a.act == "grow"), None)
+        repaired = next((a for a in report.acts if a.act == "repair_orphans"), None)
+        print(
+            f"cycle {report.cycle}: nodes {report.nodes_before}→{report.nodes_after}"
+            f" grow={grown.detail.get('count', 0) if grown else 0}"
+            f" repair={repaired.detail.get('count', 0) if repaired else 0}"
+        )
+    print(f"saved torus → {target}")
+    print(f"appended {len(reports)} cycle(s) → {log_path}")
+    return 0
+
+
+def cmd_cycle(args: argparse.Namespace) -> int:
+    args.steps = 1
+    return cmd_think(args)
+
+
+def cmd_log(args: argparse.Namespace) -> int:
+    target = store.store_path(args.store)
+    rows = store.load_activity(target)
+    if args.limit and args.limit > 0:
+        rows = rows[-args.limit :]
+    if not rows:
+        # Fall back to in-torus center_log for inspectability.
+        try:
+            eng, _ = _eng(args.store)
+            print(json.dumps(eng.torus.center_log[-args.limit :] if args.limit else eng.torus.center_log, indent=2))
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    print(json.dumps(rows, indent=2))
     return 0
 
 
@@ -148,7 +218,7 @@ def cmd_center(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="beyond_binary",
-        description="Beyond Binary AI — dual-hemisphere CLI (thin slice)",
+        description="Beyond Binary AI — Living Center + dual-hemisphere CLI",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument(
@@ -163,9 +233,39 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_init)
 
-    seed = sub.add_parser("seed-hot-cold", help="load first hot/cold cascade instance")
+    sm = sub.add_parser(
+        "seed-minimal",
+        help="minimal hot↔cold poles only (for think growth)",
+    )
+    sm.add_argument("--force", action="store_true")
+    sm.set_defaults(func=cmd_seed_minimal)
+
+    seed = sub.add_parser("seed-hot-cold", help="load full hot/cold cascade instance")
     seed.add_argument("--force", action="store_true")
     seed.set_defaults(func=cmd_seed)
+
+    th = sub.add_parser(
+        "think",
+        help="run N Living Center cycles (grow/repair/dedupe/prune/log)",
+    )
+    th.add_argument(
+        "--steps",
+        type=int,
+        default=5,
+        help="number of center cycles (default: 5)",
+    )
+    th.set_defaults(func=cmd_think)
+
+    cy = sub.add_parser("cycle", help="run one Living Center cycle (alias of think --steps 1)")
+    cy.set_defaults(func=cmd_cycle)
+
+    lg = sub.add_parser(
+        "log",
+        aliases=["center-history"],
+        help="show persisted center activity log",
+    )
+    lg.add_argument("--limit", type=int, default=0, help="show last N cycles (0 = all)")
+    lg.set_defaults(func=cmd_log)
 
     ap = sub.add_parser("add-pair", help="add antonym pair across cause/effect")
     ap.add_argument("cause")

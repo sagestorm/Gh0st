@@ -4,12 +4,24 @@ Cascade (outline): hot → boiling → water → condensation
   - hot (cause) ↔ cold (effect)
   - boiling under hot ↔ freezing under cold  (each state gets an antonym)
   - water under boiling ↔ condensation under cold  (water links condensation)
+
+Phase 2 also exposes a minimal seed (poles only) so `think` can grow the cascade.
 """
 
 from __future__ import annotations
 
 from .engine import Engine
 from .model import Torus
+
+
+def seed_minimal_hot_cold(torus: Torus | None = None) -> Torus:
+    """Poles only — Living Center grow fills the cascade."""
+    torus = torus or Torus()
+    torus.instance = "hot-cold"
+    eng = Engine(torus)
+    eng.add_pair("hot", "cold")
+    eng.assert_no_orphans()
+    return torus
 
 
 def seed_hot_cold(torus: Torus | None = None) -> Torus:
