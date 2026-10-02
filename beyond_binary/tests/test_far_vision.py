@@ -1122,21 +1122,13 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             mind_path = Path(tmp) / "mind.json"
             eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
             store.save(eng.torus, mind_path)
-            # Force a domain-matched wedge invent (#5 rejects undomain open/closed).
             reg = invent_mod.load_invent_registry(mind_path)
-            from beyond_binary import lexicon as lex
-
-            causes = [
-                n
-                for n in eng.torus.nodes.values()
-                if n.hemisphere is Hemisphere.CAUSE
-                and n.opposite
-                and n.parent
-                and (lex.pole_domain(n.parent) == "thermal")
-            ]
-            self.assertTrue(causes, msg="expected a thermal-parented wedge site")
-            child = causes[0]
-            parent = eng.torus.nodes[child.parent]
+            # Off-spine thermal wedge (#6): hot→steam is not on water/boiling/warm paths.
+            self.assertTrue(
+                eng.exists("steam") and eng.torus.nodes["steam"].parent == "hot",
+                msg="expected hot→steam off-spine site",
+            )
+            parent_name, child_name = "hot", "steam"
             cause, effect = "sear", "numb"
             instance = "search-wedge-g11embody"
             edit = {
@@ -1144,8 +1136,8 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
                 "ast": [
                     {
                         "op": "wedge",
-                        "parent": parent.name,
-                        "child": child.name,
+                        "parent": parent_name,
+                        "child": child_name,
                         "cause": cause,
                         "effect": effect,
                     }
@@ -1733,13 +1725,14 @@ class DomainCoherentInventTests(unittest.TestCase):
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6)
+        # Off-spine site: hot→steam does not lengthen water/boiling/warm (#6).
         edit = {
             "kind": "edit_ast",
             "ast": [
                 {
                     "op": "wedge",
                     "parent": "hot",
-                    "child": "warm",
+                    "child": "steam",
                     "cause": "sear",
                     "effect": "numb",
                 }
@@ -1747,6 +1740,29 @@ class DomainCoherentInventTests(unittest.TestCase):
         }
         ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
         self.assertTrue(ok, msg=reason)
+
+    def test_trial_rejects_probe_path_lengthening_wedge(self):
+        """#6: domain-matched invent still fails if it lengthens probe paths."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "wedge",
+                    "parent": "hot",
+                    "child": "boiling",
+                    "cause": "humid",
+                    "effect": "arid",
+                }
+            ],
+        }
+        ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "probe_path_len")
 
     def test_mint_under_typed_parent_skips_undomain(self):
         from beyond_binary.seed import seed_same_center
@@ -1767,6 +1783,7 @@ class DomainCoherentInventTests(unittest.TestCase):
         import os
         from beyond_binary.seed import seed_same_center
         from beyond_binary import lexicon as lex
+        from beyond_binary import invent as invent_mod
         from beyond_binary import substrate as substrate_mod
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1778,6 +1795,10 @@ class DomainCoherentInventTests(unittest.TestCase):
                 substrate_mod.reset_logs_for_tests()
                 center = LivingCenter(eng)
                 center.mind_store = mind
+                before_lens = {
+                    t: invent_mod._probe_answer_path_len(eng, t)
+                    for t in ("water", "boiling", "warm")
+                }
                 center.think(8)
                 for topic in ("water", "boiling", "warm"):
                     if not eng.exists(topic):
@@ -1799,6 +1820,14 @@ class DomainCoherentInventTests(unittest.TestCase):
                             d,
                             "thermal",
                             msg=f"probe {topic} path has non-thermal {name!r} ({d})",
+                        )
+                    after_len = invent_mod._probe_answer_path_len(eng, topic)
+                    before_len = before_lens.get(topic)
+                    if before_len is not None and after_len is not None:
+                        self.assertLessEqual(
+                            after_len,
+                            before_len,
+                            msg=f"probe {topic} path lengthened {before_len}->{after_len}",
                         )
             finally:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)

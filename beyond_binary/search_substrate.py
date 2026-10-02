@@ -402,13 +402,42 @@ def search_invent_asts(
     ]
     out: list[dict[str, Any]] = []
 
-    # --- Wedge search: insert dual between parent→child ---
+    # #6: prefer wedge sites off the thermal probe answer spine so invent
+    # does not lengthen water/boiling/warm paths by default.
+    probe_spine: set[str] = set()
+    for topic in ("water", "boiling", "warm"):
+        if not eng.exists(topic):
+            continue
+        try:
+            dual = eng.answer(topic)
+        except RuleError:
+            continue
+        for p in (
+            list(dual.cause_paths or [])
+            + list(dual.effect_paths or [])
+            + list(getattr(dual, "between", None) or [])
+        ):
+            if isinstance(p, (list, tuple)):
+                probe_spine.update(normalize(str(x)) for x in p)
+            else:
+                probe_spine.add(normalize(str(p)))
+
+    wedge_sites = []
     for node in causes:
         if not node.parent or node.parent not in eng.torus.nodes:
             continue
         parent = eng.torus.nodes[node.parent]
         if parent.hemisphere is not Hemisphere.CAUSE or not parent.opposite:
             continue
+        on_spine = (
+            normalize(parent.name) in probe_spine
+            and normalize(node.name) in probe_spine
+        )
+        wedge_sites.append((1 if on_spine else 0, parent, node))
+    wedge_sites.sort(key=lambda row: (row[0], normalize(row[1].name), normalize(row[2].name)))
+
+    # --- Wedge search: insert dual between parent→child ---
+    for _spine_rank, parent, node in wedge_sites:
         parent_domain = node_domain(eng, parent.name)
         salt = f"wedge|{normalize(node.name)}|{normalize(parent.name)}"
         pair = mint_readable_dual(
@@ -417,8 +446,6 @@ def search_invent_asts(
         if pair is None:
             # Typed sites with no matching dual left: skip site (don't fall
             # back to undomain motifs). Untyped sites may exhaust the pool.
-            if parent_domain is None:
-                break
             continue
         cause, effect = pair
         dig = _digest("wedge", normalize(node.name), normalize(parent.name), cause, effect)
