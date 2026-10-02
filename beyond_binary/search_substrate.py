@@ -92,6 +92,40 @@ def _occupied_names(eng: Engine, reserved: set[str] | None = None) -> set[str]:
     return names
 
 
+def node_domain(eng: Engine, name: str) -> str | None:
+    """Walk parent chain to the lexicon domain of a pole (thermal|ontology|optical)."""
+    from . import lexicon as lex
+
+    seen: set[str] = set()
+    cur = normalize(name)
+    while cur and cur not in seen:
+        seen.add(cur)
+        tagged = lex.pole_domain(cur)
+        if tagged:
+            return tagged
+        node = eng.torus.nodes.get(cur)
+        if node is None or not node.parent:
+            break
+        cur = normalize(node.parent)
+    return None
+
+
+def _is_ancestor(eng: Engine, ancestor: str, node_name: str) -> bool:
+    """True when ancestor lies on node_name's parent chain (rehang cycle risk)."""
+    target = normalize(ancestor)
+    seen: set[str] = set()
+    cur = normalize(node_name)
+    while cur and cur not in seen:
+        if cur == target:
+            return True
+        seen.add(cur)
+        node = eng.torus.nodes.get(cur)
+        if node is None or not node.parent:
+            break
+        cur = normalize(node.parent)
+    return False
+
+
 def _readable_dual_pool(eng: Engine, reserved: set[str] | None = None) -> list[tuple[str, str]]:
     """Unused readable antonym pairs: lexicon aliases, cascade poles, invent motifs."""
     from . import invent as invent_mod
@@ -478,6 +512,9 @@ def search_invent_asts(
             if not host.opposite or normalize(host.name) == normalize(node.name):
                 continue
             if host.parent is None and node.parent and normalize(host.name) == normalize(node.parent):
+                continue
+            # Refuse rehang onto a descendant — creates parent cycles.
+            if _is_ancestor(eng, node.name, host.name):
                 continue
             hopp = eng.torus.nodes[host.opposite]
             if normalize(host.name) == normalize(node.parent or ""):

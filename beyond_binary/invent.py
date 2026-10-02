@@ -890,6 +890,46 @@ def search_edit_score_acceptable(before, after) -> bool:
     )
 
 
+_PROBE_TOPICS: tuple[str, ...] = ("water", "boiling", "warm")
+
+
+def _thermal_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
+    """#4 narrow: refuse typed cross-domain poles on thermal probe answer paths.
+
+    Undomain'd motifs (open/closed, …) are allowed — only a *different*
+    lexicon domain (ontology/optical under thermal probes) is rejected.
+    """
+    from . import lexicon as lex
+    from . import search_substrate as search_mod
+    from .engine import RuleError, normalize as norm
+
+    for topic in _PROBE_TOPICS:
+        if not before_eng.exists(topic) or not after_eng.exists(topic):
+            continue
+        try:
+            after_dual = after_eng.answer(topic)
+        except RuleError:
+            return False
+        topic_domain = lex.pole_domain(topic) or search_mod.node_domain(after_eng, topic)
+        if topic_domain != "thermal":
+            continue
+        flat: list[str] = []
+        for p in (
+            list(after_dual.cause_paths or [])
+            + list(after_dual.effect_paths or [])
+            + list(getattr(after_dual, "between", None) or [])
+        ):
+            if isinstance(p, (list, tuple)):
+                flat.extend(str(x) for x in p)
+            else:
+                flat.append(str(p))
+        for name in flat:
+            d = lex.pole_domain(norm(name))
+            if d is not None and d != "thermal":
+                return False
+    return True
+
+
 def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, Any, str]:
     """Trial-apply search edit_ast; return (ok, pre_score, post_score, reason)."""
     from . import search_substrate as search_mod
@@ -905,6 +945,9 @@ def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, An
     post = LivingCenter(trial).score()
     if not search_edit_score_acceptable(pre, post):
         return False, pre, post, "score_gate"
+    # #4: no cross-domain pollution of thermal probe answer paths.
+    if not _thermal_probe_domain_ok(eng, trial):
+        return False, pre, post, "cross_domain_probe"
     return True, pre, post, "ok"
 
 
