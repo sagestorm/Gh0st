@@ -37,11 +37,12 @@ class Invention:
     effect: str
     instance: str
     body_name: str
-    source: str = "seed"  # primitive | compose | promote | seed
+    source: str = "seed"  # topology | concept | primitive | compose | promote | seed
     why: str = ""
+    edit: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {
+    def to_dict(self) -> dict[str, Any]:
+        row: dict[str, Any] = {
             "cause": self.cause,
             "effect": self.effect,
             "instance": self.instance,
@@ -49,6 +50,9 @@ class Invention:
             "source": self.source,
             "why": self.why,
         }
+        if self.edit:
+            row["edit"] = self.edit
+        return row
 
 
 @dataclass
@@ -59,16 +63,26 @@ class InventCandidate:
     source: str
     used: bool = False
     why: str = ""
+    edit: dict[str, Any] | None = None  # topology edit plan
+    priority: float = 1.0
+    abandoned: bool = False
+    outcome_score: float = 0.0  # cumulative from journal traces
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        row: dict[str, Any] = {
             "cause": self.cause,
             "effect": self.effect,
             "instance": self.instance,
             "source": self.source,
             "used": self.used,
             "why": self.why,
+            "priority": self.priority,
+            "abandoned": self.abandoned,
+            "outcome_score": self.outcome_score,
         }
+        if self.edit:
+            row["edit"] = self.edit
+        return row
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "InventCandidate":
@@ -79,6 +93,10 @@ class InventCandidate:
             source=str(data.get("source", "seed")),
             used=bool(data.get("used", False)),
             why=str(data.get("why", "")),
+            edit=dict(data["edit"]) if data.get("edit") else None,
+            priority=float(data.get("priority", 1.0) or 1.0),
+            abandoned=bool(data.get("abandoned", False)),
+            outcome_score=float(data.get("outcome_score", 0.0) or 0.0),
         )
 
 
@@ -117,20 +135,27 @@ def save_invent_registry(
 ) -> Path:
     path = invent_registry_path(mind_store)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Dedupe by instance key; prefer unused compose/promote over seed.
+    # Dedupe by instance key; prefer unused topology/concept over seed.
     seen: dict[str, InventCandidate] = {}
-    priority = {"compose": 3, "promote": 2, "seed": 1}
+    source_rank = {
+        "topology": 6,
+        "concept": 5,
+        "primitive": 4,
+        "compose": 3,
+        "promote": 2,
+        "seed": 1,
+    }
     for cand in registry.candidates:
         key = normalize(cand.instance)
         prev = seen.get(key)
         if prev is None:
             seen[key] = cand
             continue
-        # Keep used flag if either was used; keep higher-priority source.
         used = prev.used or cand.used
+        abandoned = prev.abandoned or cand.abandoned
         winner = (
             cand
-            if priority.get(cand.source, 0) > priority.get(prev.source, 0)
+            if source_rank.get(cand.source, 0) > source_rank.get(prev.source, 0)
             else prev
         )
         seen[key] = InventCandidate(
@@ -139,6 +164,13 @@ def save_invent_registry(
             instance=winner.instance,
             source=winner.source,
             used=used,
+            why=winner.why or prev.why,
+            edit=winner.edit or prev.edit,
+            priority=max(prev.priority, cand.priority, winner.priority),
+            abandoned=abandoned,
+            outcome_score=prev.outcome_score + cand.outcome_score
+            if prev is not winner
+            else winner.outcome_score,
         )
     registry.candidates = list(seen.values())
     path.write_text(
@@ -471,6 +503,110 @@ def concept_candidates(
     return out
 
 
+def topology_candidates(
+    eng: Engine,
+    registry_bodies: Iterable[dict],
+    *,
+    used_instances: set[str] | None = None,
+    limit: int = 4,
+) -> list[InventCandidate]:
+    """Cross-domain bridge/re-parent edits validated under dual invariants."""
+    from . import topology as topology_mod
+
+    alphabet = closed_invent_alphabet(eng, registry_bodies)
+    used_inst = set(used_instances or ())
+    edits = topology_mod.search_topology_edits(
+        eng, alphabet=alphabet, used_instances=used_inst, limit=limit
+    )
+    out: list[InventCandidate] = []
+    for row in topology_mod.edits_to_proposals(edits, used_instances=used_inst):
+        out.append(
+            InventCandidate(
+                cause=row["cause"],
+                effect=row["effect"],
+                instance=row["instance"],
+                source="topology",
+                why=row["why"],
+                edit=row.get("edit"),
+                priority=2.0,  # topology preferred when available
+            )
+        )
+        used_inst.add(normalize(row["instance"]))
+    return out
+
+
+def revise_targets_from_outcomes(
+    registry: InventRegistry,
+    journal_rows: list[Any],
+    *,
+    inventions_fired: int = 0,
+) -> InventRegistry:
+    """Abandon / reprioritize invent targets from journal outcome traces.
+
+    Used inventions followed by stalled/challenge pressure get abandoned.
+    Unused candidates whose source differs from abandoned ones get boosted.
+    """
+    from .journal import JournalEntry
+
+    if not journal_rows and inventions_fired <= 0:
+        return registry
+    normalized: list[JournalEntry] = []
+    for row in journal_rows[-16:]:
+        if isinstance(row, JournalEntry):
+            normalized.append(row)
+        else:
+            try:
+                normalized.append(JournalEntry.from_dict(row))
+            except Exception:  # noqa: BLE001
+                continue
+
+    fruitful = sum(1 for e in normalized if e.reflection == "growth_fruitful")
+    stalled = sum(1 for e in normalized if e.reflection == "growth_stalled")
+    flags = sum(
+        1
+        for e in normalized
+        if e.reflection == "challenge_pressure"
+        or int((e.signals or {}).get("flags", 0) or 0) > 0
+    )
+    invent_hints = sum(1 for e in normalized if e.strategy_hint == "invent")
+    invent_hints += max(0, int(inventions_fired))
+
+    used = [c for c in registry.candidates if c.used]
+    abandoned_sources: set[str] = set()
+
+    # Penalize used targets when invent met adverse outcomes (outcome traces).
+    if used and (stalled >= 1 or flags >= 1) and invent_hints >= 1:
+        for cand in used:
+            cand.outcome_score -= 1.0 + 0.5 * stalled + 0.5 * flags
+            if cand.outcome_score <= -1.5:
+                cand.abandoned = True
+                abandoned_sources.add(cand.source)
+                cand.priority = min(cand.priority, 0.1)
+
+    # Reward fruitful aftermath for used non-abandoned.
+    if used and fruitful >= 2 and flags == 0:
+        for cand in used:
+            if cand.abandoned:
+                continue
+            cand.outcome_score += 0.5 * fruitful
+            cand.priority = min(3.0, cand.priority + 0.25)
+
+    # Reprioritize unused: boost sources unlike abandoned; demote same-source.
+    for cand in registry.candidates:
+        if cand.used or cand.abandoned:
+            continue
+        if cand.source in abandoned_sources:
+            cand.priority = max(0.05, cand.priority * 0.4)
+            cand.outcome_score -= 0.5
+        else:
+            # Prefer topology/concept when something was abandoned.
+            if abandoned_sources:
+                bump = 0.8 if cand.source in {"topology", "concept"} else 0.3
+                cand.priority = min(3.0, cand.priority + bump)
+                cand.outcome_score += 0.25
+    return registry
+
+
 def refresh_invent_registry(
     eng: Engine,
     mind_store,
@@ -478,7 +614,7 @@ def refresh_invent_registry(
     activity: list[dict[str, Any]] | None = None,
     journal_rows: list[Any] | None = None,
 ) -> InventRegistry:
-    """Harvest structure + pressure primitives into dynamic invent registry."""
+    """Harvest topology + concepts + pressure into dynamic invent registry."""
     from . import journal as journal_mod
     from . import store
 
@@ -492,6 +628,8 @@ def refresh_invent_registry(
             used_instances.add(normalize(cand.instance))
             used_poles.add(normalize(cand.cause))
             used_poles.add(normalize(cand.effect))
+        if cand.abandoned:
+            used_instances.add(normalize(cand.instance))
     known = harvest_pairs(eng, body_dicts)
 
     if activity is None:
@@ -508,7 +646,8 @@ def refresh_invent_registry(
     existing_keys = {normalize(c.instance) for c in registry.candidates}
 
     for cand in (
-        concept_candidates(eng, body_dicts, used_instances=used_instances)
+        topology_candidates(eng, body_dicts, used_instances=used_instances)
+        + concept_candidates(eng, body_dicts, used_instances=used_instances)
         + primitive_candidates(
             eng,
             body_dicts,
@@ -526,6 +665,7 @@ def refresh_invent_registry(
         registry.candidates.append(cand)
         existing_keys.add(key)
 
+    registry = revise_targets_from_outcomes(registry, journal_rows or [])
     save_invent_registry(registry, mind_store)
     return registry
 
@@ -547,14 +687,28 @@ def next_invention(
     used_instances = already_used_instances(eng, body_dicts)
     alphabet = closed_invent_alphabet(eng, body_dicts)
 
-    # Prefer concept (structural) → primitive → compose → promote → seed.
-    order = {"concept": 0, "primitive": 1, "compose": 2, "promote": 3, "seed": 4}
-    unused = [c for c in registry.candidates if not c.used]
-    unused.sort(key=lambda c: order.get(c.source, 9))
+    # Prefer high priority; topology > concept > … ; skip abandoned.
+    source_order = {
+        "topology": 0,
+        "concept": 1,
+        "primitive": 2,
+        "compose": 3,
+        "promote": 4,
+        "seed": 5,
+    }
+    unused = [
+        c for c in registry.candidates if not c.used and not c.abandoned
+    ]
+    unused.sort(
+        key=lambda c: (-c.priority, source_order.get(c.source, 9), c.instance)
+    )
 
     for cand in unused:
-        if cand.source in {"primitive", "concept"}:
-            if (
+        if cand.source in {"primitive", "concept", "topology"}:
+            if cand.source == "topology" and cand.edit and cand.edit.get("kind") == "reparent":
+                # Re-parent uses existing poles — alphabet check on instance only.
+                pass
+            elif (
                 normalize(cand.cause) in alphabet
                 or normalize(cand.effect) in alphabet
             ):
@@ -576,6 +730,7 @@ def next_invention(
             body_name=body_name,
             source=cand.source,
             why=cand.why,
+            edit=cand.edit,
         )
     return None
 
@@ -598,23 +753,38 @@ def invent_and_embody(
     activity: list[dict[str, Any]] | None = None,
     journal_rows: list[Any] | None = None,
 ):
-    """Invent a new domain body (primitive/compose/promote/seed)."""
+    """Invent a new domain body; topology inventions also edit the mind graph."""
+    from . import topology as topology_mod
+    from .engine import Engine as Eng
+    from . import store
+    from .center import LivingCenter
+
     proposal = next_invention(
         eng, mind_store, activity=activity, journal_rows=journal_rows
     )
     if proposal is None:
         return None
 
-    from .engine import Engine as Eng
-    from . import store
-    from .center import LivingCenter
-
     mind_path = store.store_path(mind_store)
     body_path = mind_path.with_name(f"{mind_path.stem}.body.{proposal.body_name}.json")
     if body_path.exists():
         return None
 
-    torus = seed_custom(proposal.cause, proposal.effect, instance=proposal.instance)
+    topology_applied = False
+    if proposal.source == "topology" and proposal.edit:
+        topology_applied = topology_mod.apply_topology_edit(eng, proposal.edit)
+        if topology_applied:
+            store.save(eng.torus, mind_path)
+
+    # Body seed: bridge creates new poles; reparent reuses existing names as domain label.
+    if proposal.source == "topology" and proposal.edit and proposal.edit.get("kind") == "reparent":
+        # Fresh opposite pair named from the reparent instance digest — body still dual.
+        digest = normalize(proposal.instance).replace("reparent-", "")[:8]
+        body_cause = f"rc{digest}"
+        body_effect = f"re{digest}"
+        torus = seed_custom(body_cause, body_effect, instance=proposal.instance)
+    else:
+        torus = seed_custom(proposal.cause, proposal.effect, instance=proposal.instance)
     store.save(torus, body_path)
     store.clear_activity(body_path)
 
@@ -646,6 +816,8 @@ def invent_and_embody(
             "instance": proposal.instance,
             "source": proposal.source,
             "why": proposal.why,
+            "edit": proposal.edit,
+            "topology_applied": topology_applied,
         },
         "body": record.to_dict(),
     }

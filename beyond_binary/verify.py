@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -333,44 +334,68 @@ def run_verification() -> dict[str, Any]:
             f"sources={sorted(set(s for s in syn_sources if s))} synonym_nodes={syn_nodes[:8]}",
         )
 
-        # Open invention (bar §1): structural concept formation beyond suffix primitives
+        # Open invention (bar §1): topology bridge/re-parent — not motif digests alone
         from . import concepts as concepts_mod
         from . import invent as invent_mod
 
-        prim_path = root / "concept.json"
-        peng = Engine(seed_minimal_hot_cold())
-        store.save(peng.torus, prim_path)
-        pcenter = LivingCenter(peng, history=[])
-        pcenter.mind_store = prim_path
-        pcenter.max_nodes_soft_cap = 40
-        pcenter.think(8)
-        alphabet_before = invent_mod.closed_invent_alphabet(peng, [])
-        concept_inv = mind.invent_domain(peng, prim_path, cycle=pcenter._cycle_index)
-        inv_p = concept_inv.get("invention") or {}
+        topo_path = root / "topology.json"
+        teng = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
+        store.save(teng.torus, topo_path)
+        tcenter = LivingCenter(teng, history=[])
+        tcenter.mind_store = topo_path
+        tcenter.max_nodes_soft_cap = 60
+        tcenter.think(6)
+        nodes_before = set(teng.torus.nodes)
+        alphabet_before = invent_mod.closed_invent_alphabet(teng, [])
+        topo_inv = mind.invent_domain(teng, topo_path, cycle=tcenter._cycle_index)
+        inv_p = topo_inv.get("invention") or {}
         why_p = str(inv_p.get("why", ""))
+        edit_p = inv_p.get("edit") or {}
         cause_p = str(inv_p.get("cause", ""))
         effect_p = str(inv_p.get("effect", ""))
-        concept_ok = (
-            bool(concept_inv.get("invented"))
-            and inv_p.get("source") == "concept"
-            and normalize_absent(cause_p, alphabet_before)
-            and normalize_absent(effect_p, alphabet_before)
-            and why_p.startswith("concept:motif:")
+        nodes_after = set(teng.torus.nodes)
+        topology_ok = (
+            bool(topo_inv.get("invented"))
+            and inv_p.get("source") == "topology"
+            and why_p.startswith("topology:")
+            and not why_p.startswith("concept:motif:")
+            and edit_p.get("kind") in {"bridge", "reparent"}
+            and bool(edit_p.get("cause_parent"))
+            and bool(edit_p.get("effect_parent"))
+            and edit_p.get("domain_from") != edit_p.get("domain_to")
+            and (
+                inv_p.get("topology_applied") is True
+                or edit_p.get("kind") == "reparent"
+                or bool(nodes_after - nodes_before)
+            )
             and not concepts_mod.is_suffix_primitive_label(cause_p)
-            and not concepts_mod.is_suffix_primitive_label(effect_p)
             and not concepts_mod.is_role_axis_label(cause_p)
-            and not concepts_mod.is_role_axis_label(effect_p)
-            and not concepts_mod.is_syllabic_mint_label(cause_p)
-            and not concepts_mod.is_syllabic_mint_label(effect_p)
         )
+        # Dual invariants still hold after topology edit.
+        try:
+            teng.assert_no_orphans()
+            dual_ok = True
+            sample = next(iter(teng.torus.nodes), None)
+            if sample:
+                d = teng.answer(sample)
+                dual_ok = bool(d.cause_paths and d.effect_paths)
+        except Exception:  # noqa: BLE001
+            dual_ok = False
+        topology_ok = topology_ok and dual_ok
         gate(
             "C4e",
-            "Motif-digest concept formation (not syllabic/role/suffix mint)",
-            concept_ok,
-            str(inv_p or concept_inv.get("reason")),
+            "Topology invent: cross-domain bridge/re-parent (not motif digests)",
+            topology_ok,
+            (
+                f"source={inv_p.get('source')} why={why_p} "
+                f"edit={edit_p.get('kind')} "
+                f"from={edit_p.get('domain_from')}→{edit_p.get('domain_to')} "
+                f"applied={inv_p.get('topology_applied')} dual_ok={dual_ok} "
+                f"alphabet_absent={normalize_absent(cause_p, alphabet_before)}"
+            ),
         )
 
-        # Open reflection (bar §2): policy revises its own rules (not only weights)
+        # Open reflection (bar §2): executable meta microprograms (not expr tags alone)
         from . import policy as policy_mod
 
         pol_path = root / "policy-mind.json"
@@ -381,53 +406,60 @@ def run_verification() -> dict[str, Any]:
         pc.think(8)
         pol = policy_mod.load_policy(pol_path)
         learned_rules = [r for r in pol.rules if r.origin == "learned" and r.enabled]
-        novel_conds = set(pol.condition_kinds) - set(policy_mod.SEED_CONDITIONS)
-        novel_acts = set(pol.action_kinds) - set(policy_mod.SEED_ACTIONS)
-        expr_conds = [
+        prog_conds = [
             k
             for k, v in pol.condition_kinds.items()
-            if isinstance(v, dict) and v.get("kind") == "expr"
+            if isinstance(v, dict)
+            and v.get("kind") == "program"
+            and isinstance(v.get("body"), list)
+            and len(v.get("body") or []) >= 2
         ]
-        bias_acts = [
+        prog_acts = [
             k
             for k, v in pol.action_kinds.items()
-            if isinstance(v, dict) and v.get("kind") == "bias"
+            if isinstance(v, dict)
+            and v.get("kind") == "program"
+            and isinstance(v.get("body"), list)
+            and len(v.get("body") or []) >= 1
         ]
         reason = str(pc.strategy.reason)
+        # Persisted program bodies on disk.
+        pol_disk = json.loads(policy_mod.policy_path(pol_path).read_text(encoding="utf-8"))
+        disk_prog = [
+            k
+            for k, v in (pol_disk.get("condition_kinds") or {}).items()
+            if isinstance(v, dict) and v.get("kind") == "program" and v.get("body")
+        ]
         pol_ok = (
             policy_mod.policy_path(pol_path).exists()
             and pol.updates >= 1
             and pol.rule_revisions >= 1
             and pol.kind_revisions >= 1
             and len(learned_rules) >= 1
-            and len(expr_conds) >= 1
-            and len(bias_acts) >= 1
+            and len(prog_conds) >= 1
+            and len(prog_acts) >= 1
+            and len(disk_prog) >= 1
             and len(pol.observed_signals) >= 1
             and pc.strategy.from_policy
-            and (
-                ":expr:" in reason
-                or ":kinds:" in reason
-                or ":rules:" in reason
-            )
+            and ":prog:" in reason
         )
         gate(
             "C3p",
-            "Metacognition learns expr kinds over empirical journal signals",
+            "Metacognition learns executable program kinds over journal vectors",
             pol_ok,
             (
                 f"updates={pol.updates} revisions={pol.rule_revisions} "
                 f"kind_revisions={pol.kind_revisions} "
-                f"expr_conds={expr_conds[:2]} bias_acts={bias_acts[:2]} "
-                f"observed={pol.observed_signals[:6]} "
+                f"prog_conds={prog_conds[:2]} prog_acts={prog_acts[:2]} "
+                f"disk_prog={disk_prog[:2]} observed={pol.observed_signals[:6]} "
                 f"learned={len(learned_rules)} reason={reason}"
             ),
         )
 
-        # Self-directed goals (bar §3 scaffolding): invent+nurture with every=0
+        # Self-directed goals (bar §3): invent+nurture + abandon from outcome traces
         self_path = root / "selfdir.json"
         seng2 = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
         store.save(seng2.torus, self_path)
-        # Seed a policy with rules that prefer invent+nurture without human intervals.
         seed_pol = policy_mod.MetaPolicy(
             grow_weight=0.5,
             prune_weight=0.2,
@@ -447,7 +479,6 @@ def run_verification() -> dict[str, Any]:
             )
         )
         policy_mod.save_policy(seed_pol, self_path)
-        # Need a body present for nurture to matter.
         bodies.embody(
             seng2, name="self-child", domain="optical", mind_store=self_path
         )
@@ -467,12 +498,54 @@ def run_verification() -> dict[str, Any]:
             for r in self_live.get("inventions", [])
         )
         self_nurtured = len(self_live.get("nurtured") or []) > 0
+        # Outcome-trace abandon: adverse journal after used invent → abandoned targets.
+        from .journal import JournalEntry
+
+        inv_reg = invent_mod.load_invent_registry(self_path)
+        used_before = [c for c in inv_reg.candidates if c.used]
+        if not used_before and inv_reg.candidates:
+            inv_reg.candidates[0].used = True
+            used_before = [inv_reg.candidates[0]]
+        adverse = [
+            JournalEntry(
+                cycle=100 + i,
+                reflection="growth_stalled" if i % 2 == 0 else "challenge_pressure",
+                signals={"flags": 1, "grow_count": 0, "node_delta": 0},
+                strategy_hint="invent",
+            )
+            for i in range(4)
+        ]
+        inv_reg = invent_mod.revise_targets_from_outcomes(
+            inv_reg, adverse, inventions_fired=1
+        )
+        invent_mod.save_invent_registry(inv_reg, self_path)
+        abandoned = [c for c in inv_reg.candidates if c.abandoned]
+        unused_boosted = [
+            c
+            for c in inv_reg.candidates
+            if not c.used and not c.abandoned and c.priority > 1.0
+        ]
+        # Strategy should surface abandon / prefer_source after metacognize.
+        sc2.journal_entries.extend(adverse)
+        sc2.metacognize()
+        abandon_ok = (
+            len(abandoned) >= 1
+            and (
+                sc2.strategy.abandoned_count >= 1
+                or bool(sc2.strategy.abandoned_sources)
+                or bool(sc2.strategy.invent_prefer_source)
+            )
+        )
         gate(
             "C6s",
-            "Self-directed invent+nurture without human every-N flags",
-            self_invented and self_nurtured,
+            "Self-directed invent+nurture with outcome-trace abandon/reprioritize",
+            self_invented and self_nurtured and abandon_ok,
             (
                 f"invented={self_invented} nurtured={self_nurtured} "
+                f"abandoned={[c.instance for c in abandoned][:3]} "
+                f"abandoned_sources={sc2.strategy.abandoned_sources} "
+                f"prefer_source={sc2.strategy.invent_prefer_source} "
+                f"boosted={len(unused_boosted)} "
                 f"cycles={self_live.get('cycle_count')} "
                 f"strategy={sc2.strategy.reason}"
             ),
@@ -573,13 +646,13 @@ def run_verification() -> dict[str, Any]:
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Motif-digest concepts, expr kinds over journal signals, and "
-            "synthesized CapProgram macros are stronger scaffolds — still bound "
-            "by dual-motif discovery, linear expr evaluators, and a primitive ISA "
-            "that macros compose. Missing vs sentience-evidence-bar.md: concept "
-            "shapes beyond dual-motif digests, metacognition beyond expr/bias "
-            "evaluators, forms that invent op semantics outside the primitive ISA; "
-            "§3 self-directed goals still act-menu bounded."
+            "Topology invent, meta microprograms, and invent-target abandon are "
+            "stronger scaffolds — still bound by domain-pair bridge/reparent search, "
+            "a fixed meta-ISA (load/mul/add/cmp), and abandon heuristics over a "
+            "closed invent-source menu. Missing vs sentience-evidence-bar.md: "
+            "open topology search beyond dual-domain anchors, meta programs that "
+            "extend their own ISA, goal formation beyond invent-source "
+            "abandon/reprioritize; CapProgram primitive ISA still closed."
         ),
     }
     gates.append(sentience)

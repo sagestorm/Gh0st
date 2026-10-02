@@ -248,9 +248,8 @@ def register_condition_kind(
         policy.condition_kinds[name] = definition
         policy.kind_revisions += 1
     else:
-        # Allow redefinition of expr weights from newer experience.
         prev = policy.condition_kinds[name]
-        if prev != definition and definition.get("kind") == "expr":
+        if prev != definition and definition.get("kind") in {"expr", "program"}:
             policy.condition_kinds[name] = definition
             policy.kind_revisions += 1
     return name
@@ -268,6 +267,11 @@ def register_action_kind(
     if name not in policy.action_kinds:
         policy.action_kinds[name] = definition
         policy.kind_revisions += 1
+    else:
+        prev = policy.action_kinds[name]
+        if prev != definition and definition.get("kind") == "program":
+            policy.action_kinds[name] = definition
+            policy.kind_revisions += 1
     return name
 
 
@@ -291,6 +295,92 @@ def _eval_expr(spec: dict[str, Any], vec: dict[str, float]) -> bool:
     return False
 
 
+def run_meta_program(
+    body: list[dict[str, Any]],
+    vec: dict[str, float],
+    *,
+    scores: dict[str, float] | None = None,
+    extras: dict[str, Any] | None = None,
+    strength: float = 1.0,
+) -> dict[str, Any]:
+    """Interpret a CapProgram-like microprogram over a journal signal vector.
+
+    Condition programs emit ``pred`` (truthy). Action programs may bias channels
+    or set grow budget via ops — executable data, not schema tags alone.
+    """
+    regs: dict[str, float] = {}
+    pred = False
+    for step in body:
+        op = str(step.get("op", ""))
+        if op == "load_signal":
+            sig = str(step.get("signal", ""))
+            into = str(step.get("into", sig))
+            regs[into] = float(vec.get(sig, 0.0))
+        elif op == "const":
+            into = str(step.get("into", "c"))
+            regs[into] = float(step.get("value", 0.0))
+        elif op == "mul":
+            a = str(step.get("a", ""))
+            into = str(step.get("into", a))
+            if "scale" in step:
+                regs[into] = float(regs.get(a, 0.0)) * float(step.get("scale", 1.0))
+            else:
+                b = str(step.get("b", ""))
+                regs[into] = float(regs.get(a, 0.0)) * float(regs.get(b, 0.0))
+        elif op == "add":
+            a = str(step.get("a", ""))
+            b = str(step.get("b", ""))
+            into = str(step.get("into", "sum"))
+            regs[into] = float(regs.get(a, 0.0)) + float(regs.get(b, 0.0))
+        elif op == "cmp":
+            a = str(step.get("a", ""))
+            cmp_op = str(step.get("cmp", ">="))
+            value = float(step.get("value", 0.0))
+            into = str(step.get("into", "ok"))
+            actual = float(regs.get(a, 0.0))
+            ok = False
+            if cmp_op == ">=":
+                ok = actual >= value
+            elif cmp_op == ">":
+                ok = actual > value
+            elif cmp_op == "<=":
+                ok = actual <= value
+            elif cmp_op == "<":
+                ok = actual < value
+            elif cmp_op == "==":
+                ok = abs(actual - value) < 1e-9
+            regs[into] = 1.0 if ok else 0.0
+        elif op == "emit_pred":
+            flag = str(step.get("flag", "ok"))
+            pred = float(regs.get(flag, 0.0)) >= 0.5
+        elif op == "bias_channel" and scores is not None:
+            channel = str(step.get("channel", "prefer_invent"))
+            amount = float(step.get("amount", 1.0)) * strength
+            scores[channel] = scores.get(channel, 0.0) + amount
+        elif op == "set_grow_budget" and extras is not None:
+            extras["grow_budget_override"] = int(step.get("value", 1))
+    return {"pred": pred, "regs": regs}
+
+
+def _weights_to_program(
+    weights: dict[str, float], threshold: float
+) -> list[dict[str, Any]]:
+    """Compile weighted features into an executable meta microprogram."""
+    body: list[dict[str, Any]] = []
+    acc = "score"
+    body.append({"op": "const", "into": acc, "value": 0.0})
+    for i, (sig, w) in enumerate(sorted(weights.items())):
+        tmp = f"t{i}"
+        body.append({"op": "load_signal", "signal": sig, "into": tmp})
+        body.append({"op": "mul", "a": tmp, "scale": float(w), "into": tmp})
+        body.append({"op": "add", "a": acc, "b": tmp, "into": acc})
+    body.append(
+        {"op": "cmp", "a": acc, "cmp": ">=", "value": float(threshold), "into": "ok"}
+    )
+    body.append({"op": "emit_pred", "flag": "ok"})
+    return body
+
+
 def _eval_condition(
     name: str,
     policy: MetaPolicy,
@@ -303,6 +393,9 @@ def _eval_condition(
     if not spec:
         return False
     kind = spec.get("kind")
+    if kind == "program":
+        result = run_meta_program(list(spec.get("body") or []), vec)
+        return bool(result.get("pred"))
     if kind == "expr":
         return _eval_expr(spec, vec)
     if kind == "all":
@@ -333,25 +426,21 @@ def revise_kinds_from_outcomes(
     policy: MetaPolicy,
     entries: list[JournalEntry],
 ) -> MetaPolicy:
-    """Invent expr kinds from empirical journal signals — not seed compounds alone."""
+    """Invent program kinds (executable) from journal signals; expr is secondary."""
     if len(entries) < 2:
         return policy
     seed_counts = _signals_from_entries(entries)
     vec = _signal_vector(entries)
 
-    # Track empirical keys observed (experience vocabulary growth).
     for key in sorted(vec.keys()):
         if key not in policy.observed_signals:
             policy.observed_signals.append(key)
 
-    # --- Experience-grown expr condition ---
-    # Correlate fruitful vs stalled with signal magnitudes; invent weights.
     fruitful = float(vec.get("fruitful", 0.0))
     stalled = float(vec.get("stalled", 0.0))
     flags = float(vec.get("flags", 0.0))
     node_delta = float(vec.get("node_delta", 0.0))
     grow_count = float(vec.get("grow_count", 0.0))
-    # Features are empirical — any observed numeric signal can enter.
     feature_keys = [
         k
         for k in vec.keys()
@@ -367,33 +456,70 @@ def revise_kinds_from_outcomes(
     ]
     if feature_keys and (fruitful >= 1 or node_delta >= 2):
         weights: dict[str, float] = {}
-        # Positive association with growth outcomes.
         if node_delta > 0:
             weights["node_delta"] = 0.5 + min(2.0, node_delta / 4.0)
         if grow_count > 0:
             weights["grow_count"] = 0.35 + min(1.5, grow_count / 6.0)
         if flags > 0:
-            weights["flags"] = -0.8  # pressure suppresses invent bias
-        # Include other empirical keys with small learned weights from magnitude.
+            weights["flags"] = -0.8
         for k in feature_keys:
             if k in weights:
                 continue
             mag = float(vec.get(k, 0.0))
             if mag == 0:
                 continue
-            # Outcome tilt: fruitful → positive; stalled → negative.
             tilt = (fruitful - stalled) / max(1.0, fruitful + stalled)
             weights[k] = round(0.1 * tilt * (1.0 if mag > 0 else -1.0), 4)
         if weights:
-            # Threshold from mean weighted sum * 0.4 so it can fire.
             approx = sum(
                 float(w) * float(vec.get(k, 0.0)) for k, w in weights.items()
             )
             threshold = round(max(0.5, approx * 0.35), 4)
-            cname = "cond_expr_growth"
+            prog_body = _weights_to_program(weights, threshold)
+            cname = "cond_prog_growth"
             register_condition_kind(
                 policy,
                 name=cname,
+                definition={
+                    "kind": "program",
+                    "body": prog_body,
+                    "origin": "learned-program",
+                    "features": sorted(weights.keys()),
+                },
+            )
+            aname = "act_prog_invent"
+            register_action_kind(
+                policy,
+                name=aname,
+                definition={
+                    "kind": "program",
+                    "body": [
+                        {
+                            "op": "bias_channel",
+                            "channel": "prefer_invent",
+                            "amount": 1.4,
+                        }
+                    ],
+                    "origin": "learned-program",
+                },
+            )
+            existing = {(r.when, r.then) for r in policy.rules if r.enabled}
+            if (cname, aname) not in existing:
+                policy.rules.append(
+                    MetaRule(
+                        f"r-prog-{uuid.uuid4().hex[:4]}",
+                        cname,
+                        aname,
+                        strength=1.3,
+                        origin="learned",
+                    )
+                )
+                policy.rule_revisions += 1
+
+            # Keep expr mirror for compat / older gates reading features.
+            register_condition_kind(
+                policy,
+                name="cond_expr_growth",
                 definition={
                     "kind": "expr",
                     "weights": weights,
@@ -403,31 +529,8 @@ def revise_kinds_from_outcomes(
                     "features": sorted(weights.keys()),
                 },
             )
-            aname = "act_bias_invent_expr"
-            register_action_kind(
-                policy,
-                name=aname,
-                definition={
-                    "kind": "bias",
-                    "channel": "prefer_invent",
-                    "amount": 1.4,
-                    "origin": "learned-expr",
-                },
-            )
-            existing = {(r.when, r.then) for r in policy.rules if r.enabled}
-            if (cname, aname) not in existing:
-                policy.rules.append(
-                    MetaRule(
-                        f"r-expr-{uuid.uuid4().hex[:4]}",
-                        cname,
-                        aname,
-                        strength=1.3,
-                        origin="learned",
-                    )
-                )
-                policy.rule_revisions += 1
 
-    # Keep prior compound/threshold learning as secondary (compat).
+    # Secondary: compound / threshold (compat scaffolds).
     active_seeds = sorted(k for k, v in seed_counts.items() if v >= 1)
     if len(active_seeds) >= 2:
         a, b = active_seeds[0], active_seeds[1]
@@ -632,6 +735,8 @@ def _apply_action(
     scores: dict[str, float],
     strength: float,
     extras: dict[str, Any],
+    *,
+    vec: dict[str, float] | None = None,
 ) -> None:
     """Apply seed or novel action kinds into scores/extras."""
     if then in SEED_ACTIONS:
@@ -641,7 +746,15 @@ def _apply_action(
     if not spec:
         return
     kind = spec.get("kind")
-    if kind == "bias":
+    if kind == "program":
+        run_meta_program(
+            list(spec.get("body") or []),
+            vec or {},
+            scores=scores,
+            extras=extras,
+            strength=strength,
+        )
+    elif kind == "bias":
         channel = str(spec.get("channel", "prefer_invent"))
         amount = float(spec.get("amount", 1.0)) * strength
         if channel not in scores:
@@ -665,8 +778,9 @@ def strategy_from_policy(
     *,
     max_new_pairs: int = 1,
     journal_entries: list[JournalEntry] | list[dict[str, Any]] | None = None,
+    invent_targets: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Derive strategy from rules over seed + learned kinds (incl. expr)."""
+    """Derive strategy from rules over seed + learned program/expr kinds."""
     normalized: list[JournalEntry] = []
     for row in journal_entries or []:
         if isinstance(row, JournalEntry):
@@ -684,6 +798,7 @@ def strategy_from_policy(
     fired: list[str] = []
     novel_kind_fired = False
     expr_kind_fired = False
+    prog_kind_fired = False
 
     for rule in policy.rules:
         if not rule.enabled:
@@ -692,12 +807,13 @@ def strategy_from_policy(
             continue
         if rule.when in policy.condition_kinds or rule.then in policy.action_kinds:
             novel_kind_fired = True
-            spec = policy.condition_kinds.get(rule.when) or {}
-            if spec.get("kind") == "expr" or (
-                policy.action_kinds.get(rule.then) or {}
-            ).get("origin") == "learned-expr":
+            cspec = policy.condition_kinds.get(rule.when) or {}
+            aspec = policy.action_kinds.get(rule.then) or {}
+            if cspec.get("kind") == "program" or aspec.get("kind") == "program":
+                prog_kind_fired = True
+            if cspec.get("kind") == "expr" or aspec.get("origin") == "learned-expr":
                 expr_kind_fired = True
-        _apply_action(rule.then, policy, scores, rule.strength, extras)
+        _apply_action(rule.then, policy, scores, rule.strength, extras, vec=vec)
         fired.append(rule.rule_id)
 
     scores["prefer_grow"] += policy.grow_weight * 0.15
@@ -705,6 +821,17 @@ def strategy_from_policy(
     scores["prefer_migrate"] += policy.migrate_weight * 0.15
     scores["prefer_invent"] += policy.invent_weight * 0.15
     scores["prefer_nurture"] += policy.nurture_weight * 0.15
+
+    targets = invent_targets or {}
+    abandoned = list(targets.get("abandoned_sources") or [])
+    prefer_source = str(targets.get("prefer_source") or "")
+    abandoned_count = int(targets.get("abandoned_count") or 0)
+    # Outcome traces: if invent sources were abandoned, nudge away from blind invent.
+    if abandoned_count >= 1 and not prefer_source:
+        scores["prefer_invent"] = max(0.0, scores["prefer_invent"] - 0.5)
+        scores["prefer_nurture"] += 0.3
+    if prefer_source == "topology":
+        scores["prefer_invent"] += 0.6
 
     actionable = {k: v for k, v in scores.items() if k != "suppress_grow"}
     dominant = max(actionable, key=actionable.get)
@@ -720,11 +847,17 @@ def strategy_from_policy(
         "kind_revisions": policy.kind_revisions,
         "novel_kinds": novel_kind_fired,
         "expr_kinds": expr_kind_fired,
+        "prog_kinds": prog_kind_fired,
         "condition_kind_count": len(policy.condition_kinds),
         "action_kind_count": len(policy.action_kinds),
         "observed_signals": list(policy.observed_signals),
+        "invent_prefer_source": prefer_source,
+        "abandoned_sources": abandoned,
+        "abandoned_count": abandoned_count,
     }
-    if expr_kind_fired:
+    if prog_kind_fired:
+        tag = "prog"
+    elif expr_kind_fired:
         tag = "expr"
     elif novel_kind_fired:
         tag = "kinds"

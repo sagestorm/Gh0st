@@ -92,6 +92,9 @@ class Strategy:
     policy_id: str = ""
     want_invent: bool = False
     want_nurture: bool = False
+    invent_prefer_source: str = ""
+    abandoned_sources: list[str] | None = None
+    abandoned_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +107,9 @@ class Strategy:
             "policy_id": self.policy_id,
             "want_invent": self.want_invent,
             "want_nurture": self.want_nurture,
+            "invent_prefer_source": self.invent_prefer_source,
+            "abandoned_sources": list(self.abandoned_sources or []),
+            "abandoned_count": self.abandoned_count,
         }
 
     @classmethod
@@ -118,6 +124,9 @@ class Strategy:
             policy_id=str(data.get("policy_id", "")),
             want_invent=bool(data.get("want_invent", False)),
             want_nurture=bool(data.get("want_nurture", False)),
+            invent_prefer_source=str(data.get("invent_prefer_source", "")),
+            abandoned_sources=list(data.get("abandoned_sources") or []),
+            abandoned_count=int(data.get("abandoned_count", 0) or 0),
         )
 
 
@@ -191,6 +200,38 @@ class LivingCenter:
                     self.mind_store
                 ).exists():
                     policy_mod.save_policy(pol, self.mind_store)
+            # Outcome-trace invent targets (abandon / reprioritize).
+            invent_targets: dict[str, Any] = {}
+            try:
+                from . import invent as invent_mod
+
+                inv_reg = invent_mod.refresh_invent_registry(
+                    self.engine,
+                    self.mind_store,
+                    activity=self.activity,
+                    journal_rows=journal_rows,
+                )
+                abandoned = sorted(
+                    {c.source for c in inv_reg.candidates if c.abandoned}
+                )
+                unused = [
+                    c
+                    for c in inv_reg.candidates
+                    if not c.used and not c.abandoned
+                ]
+                prefer = ""
+                if unused:
+                    unused.sort(key=lambda c: (-c.priority, c.source, c.instance))
+                    prefer = unused[0].source
+                invent_targets = {
+                    "abandoned_sources": abandoned,
+                    "abandoned_count": sum(
+                        1 for c in inv_reg.candidates if c.abandoned
+                    ),
+                    "prefer_source": prefer,
+                }
+            except Exception:  # noqa: BLE001
+                invent_targets = {}
             if pol.updates > 0 or pol.rule_revisions > 0 or any(
                 r.origin == "learned" for r in pol.rules
             ):
@@ -202,6 +243,7 @@ class LivingCenter:
                         pol,
                         max_new_pairs=self.max_new_pairs_per_cycle,
                         journal_entries=journal_rows,
+                        invent_targets=invent_targets,
                     )
                 )
                 return self.strategy

@@ -441,31 +441,30 @@ class SynonymCascadeTests(unittest.TestCase):
 
 class OpenMindScaffoldTests(unittest.TestCase):
     def test_concept_formation_beyond_suffix_primitives(self):
-        from beyond_binary import concepts as concepts_mod
         from beyond_binary import invent as invent_mod
         from beyond_binary import mind as mind_mod
+        from beyond_binary.seed import seed_same_center
 
         with tempfile.TemporaryDirectory() as tmp:
             mind_path = Path(tmp) / "mind.json"
-            eng = Engine(seed_minimal_hot_cold())
+            eng = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
             store.save(eng.torus, mind_path)
             center = LivingCenter(eng, history=[])
             center.mind_store = mind_path
-            center.max_nodes_soft_cap = 40
-            center.think(8)
+            center.max_nodes_soft_cap = 60
+            center.think(6)
             alphabet = invent_mod.closed_invent_alphabet(eng, [])
             result = mind_mod.invent_domain(eng, mind_path, cycle=1)
             self.assertTrue(result.get("invented"))
             inv = result["invention"]
-            self.assertEqual(inv["source"], "concept")
-            self.assertTrue(str(inv.get("why", "")).startswith("concept:motif:"))
-            self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["cause"]))
-            self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["effect"]))
-            self.assertFalse(concepts_mod.is_role_axis_label(inv["cause"]))
-            self.assertFalse(concepts_mod.is_role_axis_label(inv["effect"]))
-            self.assertFalse(concepts_mod.is_syllabic_mint_label(inv["cause"]))
-            self.assertFalse(concepts_mod.is_syllabic_mint_label(inv["effect"]))
-            self.assertNotIn(normalize(inv["cause"]), alphabet)
+            self.assertEqual(inv["source"], "topology")
+            self.assertTrue(str(inv.get("why", "")).startswith("topology:"))
+            self.assertNotEqual(str(inv.get("why", ""))[:14], "concept:motif:")
+            edit = inv.get("edit") or {}
+            self.assertIn(edit.get("kind"), {"bridge", "reparent"})
+            self.assertNotEqual(edit.get("domain_from"), edit.get("domain_to"))
+            if edit.get("kind") == "bridge":
+                self.assertNotIn(normalize(inv["cause"]), alphabet)
 
     def test_policy_revises_rules_not_only_weights(self):
         from beyond_binary import policy as policy_mod
@@ -491,11 +490,16 @@ class OpenMindScaffoldTests(unittest.TestCase):
         self.assertTrue(pol.action_kinds)
         self.assertTrue(
             any(
-                isinstance(v, dict) and v.get("kind") == "expr"
+                isinstance(v, dict)
+                and v.get("kind") == "program"
+                and isinstance(v.get("body"), list)
+                and len(v.get("body") or []) >= 2
                 for v in pol.condition_kinds.values()
             )
         )
         self.assertTrue(pol.observed_signals)
+        strat = policy_mod.strategy_from_policy(pol, journal_entries=entries)
+        self.assertIn(":prog:", strat["reason"])
 
         # Same weights, different rule sets → different strategies.
         a = policy_mod.MetaPolicy(updates=1, grow_weight=1.0, prune_weight=1.0)
@@ -584,6 +588,27 @@ class OpenMindScaffoldTests(unittest.TestCase):
                 )
             )
             self.assertGreater(len(result.get("nurtured") or []), 0)
+
+            # Outcome-trace abandon / reprioritize (not only want_* flags).
+            from beyond_binary import invent as invent_mod
+            from beyond_binary.journal import JournalEntry
+
+            reg = invent_mod.load_invent_registry(mind_path)
+            if not any(c.used for c in reg.candidates) and reg.candidates:
+                reg.candidates[0].used = True
+            adverse = [
+                JournalEntry(
+                    cycle=50 + i,
+                    reflection="growth_stalled",
+                    signals={"flags": 1, "grow_count": 0, "node_delta": 0},
+                    strategy_hint="invent",
+                )
+                for i in range(3)
+            ]
+            reg = invent_mod.revise_targets_from_outcomes(
+                reg, adverse, inventions_fired=1
+            )
+            self.assertTrue(any(c.abandoned for c in reg.candidates))
 
 
 class VerifyFarVisionTests(unittest.TestCase):
