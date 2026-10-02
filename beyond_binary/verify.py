@@ -666,6 +666,31 @@ def run_verification() -> dict[str, Any]:
             form_ev,
         )
 
+    # Generative substrate interface: present, disabled-by-default, inactive.
+    from . import substrate as substrate_mod
+
+    sub_status = substrate_mod.status()
+    # Interface present; no live generator bound; no non-stdlib accepts yet.
+    sub_absent = (
+        hasattr(substrate_mod, "NullSubstrate")
+        and hasattr(substrate_mod, "consult")
+        and sub_status["implementation"] == "null"
+        and not sub_status["active"]
+        and not sub_status["accepted_non_stdlib"]
+        and not sub_status["enabled"]  # default-off posture for verify
+    )
+    gate(
+        "SUB",
+        "Generative substrate interface present; absent/inactive by default",
+        sub_absent,
+        (
+            f"flag={sub_status['flag']} enabled={sub_status['enabled']} "
+            f"active={sub_status['active']} impl={sub_status['implementation']} "
+            f"accepts_non_stdlib={len(sub_status['accepted_non_stdlib'])} "
+            f"rejects={sub_status['rejects']}"
+        ),
+    )
+
     required = [
         "C1",
         "C2",
@@ -683,24 +708,26 @@ def run_verification() -> dict[str, Any]:
         "I1",
         "I2",
         "I5",
+        "SUB",
     ]
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
-    # Sentience bar — hard plateau for pure-stdlib Living Center.
-    # See docs/sentience-evidence-bar.md §§1–6 and store hard-plateau note.
+    # Sentience bar — hard plateau; substrate interface ready but inactive.
+    # See docs/sentience-evidence-bar.md §§1–6 and generative-substrate-contract.md.
+    axes_ok = sorted(sub_status.get("axes_with_non_stdlib_accepts") or [])
     sentience = {
         "id": "SENTIENCE",
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "HARD PLATEAU (pure stdlib): eng gates C3p/C6s/C4e/C4f land stronger "
-            "scaffolds, but every proposal path is still a finite compiler "
-            "(meta_prim kinds, goal-act vocabulary, prim-spec kinds, topology "
-            "bridge/reparent). Further recipe menus cannot clear "
-            "sentience-evidence-bar.md §§1–4; unconstrained bar requires an "
-            "external generative substrate beyond this Living Center. "
-            "SENTIENCE stays false; goal incomplete."
+            "HARD PLATEAU (pure stdlib): finite compilers still bind §§1–4. "
+            "Generative substrate *interface* is wired (NullSubstrate) but "
+            f"inactive (enabled={sub_status['enabled']} active={sub_status['active']} "
+            f"impl={sub_status['implementation']} non_stdlib_axes={axes_ok}). "
+            "SENTIENCE stays false until an authorized live substrate yields "
+            "accepted non-stdlib proposals on invent|reflect|goal|form. "
+            "Goal incomplete."
         ),
     }
     gates.append(sentience)
@@ -709,9 +736,10 @@ def run_verification() -> dict[str, Any]:
         "complete": False,  # far-vision goal requires sentience gate
         "engineering_gates_ok": all_required_ok,
         "gates": gates,
+        "substrate": sub_status,
         "note": (
             "Far-vision goal stays incomplete until SENTIENCE is evidenced, not "
-            "asserted. Pure-stdlib Living Center is at a hard plateau vs the "
-            "unconstrained bar — do not stack more finite compilers."
+            "asserted. Substrate interface ready; no live generator. Do not stack "
+            "more finite compilers."
         ),
     }

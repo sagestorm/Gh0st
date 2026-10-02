@@ -705,6 +705,22 @@ def evolve_program(program: CapProgram, eng: Engine) -> CapProgram:
 
     # §4 leap: propose new primitives (not syn macros) validated against duals.
     propose_primitives_from_structure(program, eng)
+    # Optional generative substrate for novel form primitives (default off).
+    try:
+        from . import substrate as substrate_mod
+
+        substrate_mod.consult(
+            "form",
+            {
+                "program_id": program.program_id,
+                "primitive_count": len(program.primitives),
+                "op_count": len(program.ops),
+                "node_count": len(eng.torus.nodes),
+            },
+            center=None,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return program
 
 

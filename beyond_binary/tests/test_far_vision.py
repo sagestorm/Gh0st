@@ -650,15 +650,64 @@ class OpenMindScaffoldTests(unittest.TestCase):
             self.assertTrue(all(a not in goals_mod.SEED_GOAL_ACTS for a in novel))
 
 
+class SubstrateInterfaceTests(unittest.TestCase):
+    def tearDown(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
+
+    def test_null_substrate_returns_empty(self):
+        from beyond_binary import substrate as substrate_mod
+
+        sub = substrate_mod.NullSubstrate()
+        self.assertEqual(sub.propose({"axis": "invent"}), [])
+        prop = substrate_mod.Proposal(
+            axis="invent", payload={}, provenance="test:x"
+        )
+        self.assertFalse(sub.validate(prop, center=None).accepted)
+        self.assertIsNone(sub.accept(prop))
+
+    def test_default_flag_off_consult_noop(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        self.assertFalse(substrate_mod.substrate_enabled())
+        self.assertFalse(substrate_mod.is_active())
+        self.assertEqual(substrate_mod.consult("invent", {}), [])
+        st = substrate_mod.status()
+        self.assertEqual(st["implementation"], "null")
+        self.assertFalse(st["enabled"])
+        self.assertFalse(st["active"])
+
+    def test_flag_on_still_null_without_live_impl(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ[substrate_mod.ENV_FLAG] = "1"
+        self.assertTrue(substrate_mod.substrate_enabled())
+        self.assertFalse(substrate_mod.is_active())
+        self.assertEqual(substrate_mod.get_substrate().name, "null")
+        self.assertEqual(substrate_mod.consult("reflect", {"vec": {}}), [])
+
+
 class VerifyFarVisionTests(unittest.TestCase):
     def test_verify_reports_incomplete_sentience(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
         from beyond_binary import verify
 
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
         report = verify.run_verification()
         self.assertFalse(report["complete"])
         by_id = {g["id"]: g for g in report["gates"]}
         self.assertFalse(by_id["SENTIENCE"]["ok"])
         self.assertIn("HARD PLATEAU", by_id["SENTIENCE"]["evidence"])
+        self.assertIn("inactive", by_id["SENTIENCE"]["evidence"])
+        self.assertTrue(by_id["SUB"]["ok"])
         self.assertTrue(by_id["I1"]["ok"])
         self.assertTrue(by_id["I5"]["ok"])
         self.assertTrue(by_id["C4e"]["ok"])
@@ -666,6 +715,7 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertTrue(by_id["C4f"]["ok"])
         self.assertTrue(by_id["C6s"]["ok"])
         self.assertTrue(report["engineering_gates_ok"])
+        self.assertEqual(report.get("substrate", {}).get("implementation"), "null")
 
 
 if __name__ == "__main__":

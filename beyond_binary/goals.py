@@ -221,6 +221,24 @@ def form_goals_from_outcomes(
                 g.priority = 0.1
                 board.revisions += 1
 
+    # Optional generative substrate for novel goal acts (default off).
+    try:
+        from . import substrate as substrate_mod
+
+        substrate_mod.consult(
+            "goal",
+            {
+                "fruitful": fruitful,
+                "stalled": stalled,
+                "flags": flags,
+                "invent_summary": dict(summary),
+                "active_goal_count": len(active_goals(board)),
+            },
+            center=None,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     return board
 
 

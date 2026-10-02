@@ -625,6 +625,22 @@ def revise_kinds_from_outcomes(
     # Extend meta-ISA with new opcodes (not only compose SEED_META_OPS).
     proposed_meta = propose_meta_primitives(policy, vec)
 
+    # Optional generative substrate for novel reflect opcodes (default off).
+    try:
+        from . import substrate as substrate_mod
+
+        substrate_mod.consult(
+            "reflect",
+            {
+                "vec": dict(vec),
+                "meta_isa_revisions": policy.meta_isa_revisions,
+                "proposed_meta": list(proposed_meta),
+            },
+            center=None,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     fruitful = float(vec.get("fruitful", 0.0))
     stalled = float(vec.get("stalled", 0.0))
     flags = float(vec.get("flags", 0.0))

@@ -666,6 +666,22 @@ def refresh_invent_registry(
         existing_keys.add(key)
 
     registry = revise_targets_from_outcomes(registry, journal_rows or [])
+    # Optional generative substrate (default off → NullSubstrate / no-op).
+    try:
+        from . import substrate as substrate_mod
+
+        substrate_mod.consult(
+            "invent",
+            {
+                "used_poles": sorted(used_poles),
+                "used_instances": sorted(used_instances),
+                "candidate_count": len(registry.candidates),
+                "journal_len": len(journal_rows or []),
+            },
+            center=None,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     save_invent_registry(registry, mind_store)
     return registry
 
