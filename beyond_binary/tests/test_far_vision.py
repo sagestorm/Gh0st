@@ -1120,22 +1120,23 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             mind_path = Path(tmp) / "mind.json"
-            eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
+            eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+            LivingCenter(eng).think(6)
             store.save(eng.torus, mind_path)
             reg = invent_mod.load_invent_registry(mind_path)
-            # #8: path-neutral root add_dual (on-spine wedges are rejected).
-            self.assertTrue(eng.exists("nothing") and eng.torus.nodes["nothing"].parent is None)
-            cause, effect = "latent", "manifest"
-            instance = "search-add-g11embody"
+            # #9: productive path-shortening rehang (meet-only add_dual is rejected).
+            self.assertTrue(eng.exists("water") and eng.exists("hot"))
+            cause, effect = "water", "condensation"
+            instance = "rehang-g11embody"
             edit = {
                 "kind": "edit_ast",
                 "ast": [
                     {
-                        "op": "add_dual",
+                        "op": "rehang",
                         "cause": cause,
                         "effect": effect,
-                        "cause_parent": "nothing",
-                        "effect_parent": "something",
+                        "cause_parent": "hot",
+                        "effect_parent": "cold",
                     }
                 ],
             }
@@ -1146,7 +1147,7 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
                     effect=effect,
                     instance=instance,
                     source="search",
-                    why="test:add_dual",
+                    why="test:rehang-productive",
                     edit=edit,
                     priority=99.0,
                 ),
@@ -1156,7 +1157,7 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             self.assertIsNotNone(result)
             body = result["body"]
             prog = capability_mod.load_program(body["store_path"])
-            # Single add_dual body still carries invent-coupled specialty.
+            # Rehang body still carries invent-coupled specialty.
             self.assertTrue(
                 any(k.startswith("prim_invent_") for k in prog.primitives),
                 msg=f"expected invent prim, got {list(prog.primitives)}",
@@ -1714,8 +1715,8 @@ class DomainCoherentInventTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "domain_probe_path")
 
-    def test_trial_allows_path_neutral_root_add_dual(self):
-        """#8: root leaf add_dual does not lengthen cascade probes."""
+    def test_trial_allows_meet_only_path_neutral_as_fallback(self):
+        """#9: path-neutral meet invent still applies when no exceed is required."""
         from beyond_binary.seed import seed_same_center
         from beyond_binary import invent as invent_mod
 
@@ -1733,8 +1734,55 @@ class DomainCoherentInventTests(unittest.TestCase):
                 }
             ],
         }
+        ok, pre, post, reason = invent_mod._trial_search_edit(eng, edit)
+        self.assertTrue(ok, msg=reason)
+        from beyond_binary import search_substrate as search_mod
+
+        trial = search_mod._clone_engine(eng)
+        self.assertTrue(search_mod.apply_edit_ast(trial, edit["ast"]))
+        # Meet-only: no product exceed vs pre-invent.
+        self.assertEqual(
+            invent_mod.product_exceed_reasons(eng, trial, pre, post),
+            [],
+        )
+
+    def test_trial_allows_path_shortening_rehang(self):
+        """#9: invent that shortens a present cascade probe path can apply."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        before_water = invent_mod._probe_answer_path_len(eng, "water")
+        self.assertEqual(before_water, 5)
+        edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "rehang",
+                    "cause": "water",
+                    "effect": "condensation",
+                    "cause_parent": "hot",
+                    "effect_parent": "cold",
+                }
+            ],
+        }
         ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
         self.assertTrue(ok, msg=reason)
+        from beyond_binary import search_substrate as search_mod
+
+        trial = search_mod._clone_engine(eng)
+        self.assertTrue(search_mod.apply_edit_ast(trial, edit["ast"]))
+        after_water = invent_mod._probe_answer_path_len(trial, "water")
+        self.assertEqual(after_water, 4)
+        exceeds = invent_mod.product_exceed_reasons(
+            eng, trial, _pre, _post
+        )
+        self.assertTrue(exceeds)
+        self.assertTrue(
+            any("probe_path" in r for r in exceeds),
+            msg=exceeds,
+        )
 
     def test_trial_rejects_probe_path_lengthening_wedge(self):
         """#6: domain-matched invent still fails if it lengthens probe paths."""
@@ -1911,6 +1959,102 @@ class DynamicCascadeProbeTests(unittest.TestCase):
             s_len = (report["search"]["probes"].get(topic) or {}).get("path_len")
             if n_len is not None and s_len is not None:
                 self.assertLessEqual(int(s_len), int(n_len), msg=topic)
+
+    def test_verify_default_fail_closed(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import verify
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
+        report = verify.run_verification()
+        self.assertFalse(report["complete"])
+        by_id = {g["id"]: g for g in report["gates"]}
+        self.assertFalse(by_id["SENTIENCE"]["ok"])
+        self.assertTrue(by_id["P1"]["ok"], msg=by_id["P1"]["evidence"])
+
+
+class ProductiveInventTests(unittest.TestCase):
+    """#9: invent must earn ≥1 product exceed or honestly reject."""
+
+    def test_search_prefers_productive_rehang(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import search_substrate as search_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        rows = search_mod.search_invent_asts(eng, limit=3)
+        self.assertTrue(rows)
+        self.assertTrue(
+            any(
+                (row.get("ast") or [{}])[0].get("op") == "rehang"
+                and "water" in str(row.get("why", ""))
+                and "hot" in str(row.get("why", ""))
+                for row in rows
+            ),
+            msg=f"expected productive water→hot rehang in { [r.get('why') for r in rows] }",
+        )
+
+    def test_scoreboard_detects_meet_only_invent(self):
+        from beyond_binary import product_scoreboard as sb
+
+        null = {
+            "score": {
+                "dual_coverage": 1.0,
+                "link_symmetry": 1.0,
+                "unused_path_cost": 0.0,
+                "node_count": 10,
+            },
+            "readable_name_ratio": 1.0,
+            "answer_path_digests": 0,
+            "digest_node_count": 0,
+            "cross_domain_path_poles": 0,
+            "undomain_path_poles": 0,
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_digests": 0, "path_len": 5}},
+        }
+        meet_only = {
+            "score": {
+                "dual_coverage": 1.0,
+                "link_symmetry": 1.0,
+                "unused_path_cost": 0.0,
+                "node_count": 12,
+            },
+            "readable_name_ratio": 1.0,
+            "answer_path_digests": 0,
+            "digest_node_count": 0,
+            "cross_domain_path_poles": 0,
+            "undomain_path_poles": 0,
+            "probe_path_len_total": 20,
+            "invent_applied": True,
+            "probes": {"water": {"answerable": True, "path_digests": 0, "path_len": 5}},
+        }
+        ok, regs = sb.evaluate_meet_or_exceed(null, meet_only, probes=("water",))
+        self.assertTrue(ok)
+        exceeded, exceeds = sb.evaluate_product_exceed(
+            null, meet_only, probes=("water",)
+        )
+        self.assertFalse(exceeded)
+        self.assertEqual(exceeds, [])
+
+    def test_run_scoreboard_prefers_product_exceed(self):
+        from beyond_binary import product_scoreboard as sb
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertIn("product_exceed", report)
+        self.assertIn("meet_only_invent", report)
+        if report["search"].get("invent_applied"):
+            # Prefer exceed when available; scoreboard distinguishes either way.
+            if report.get("product_exceed"):
+                self.assertFalse(report.get("meet_only_invent"))
+                self.assertTrue(report.get("exceeds"))
+                self.assertLessEqual(
+                    int(report["search"]["probe_path_len_total"]),
+                    int(report["null"]["probe_path_len_total"]),
+                )
+            else:
+                self.assertTrue(report.get("meet_only_invent"))
 
     def test_verify_default_fail_closed(self):
         import os
