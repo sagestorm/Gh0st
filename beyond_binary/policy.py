@@ -1,8 +1,8 @@
-"""Mutable metacognition — weights plus revisable rule sets.
+"""Extensible metacognition — conditions/actions grow beyond a seed DSL.
 
-Open reflection requires more than weight updates on a fixed menu: the policy
-can **add/disable rules** learned from journal outcomes. Strategy cites
-policy_id and active rule ids.
+Seed enums bootstrap the system. Experience can register **new condition kinds**
+(compound signal predicates) and **new action kinds** (parameterized biases).
+Strategy cites policy_id, active rules, and whether novel kinds were used.
 """
 
 from __future__ import annotations
@@ -17,9 +17,8 @@ from . import store
 from .journal import JournalEntry
 
 
-# Finite condition/action vocabulary for learned rules (still bounded — not
-# sentience — but rules themselves are mutable, not only weights).
-CONDITIONS = (
+# Seed vocabulary only — runtime kinds live on MetaPolicy and can grow.
+SEED_CONDITIONS = (
     "flags_high",
     "growth_fruitful",
     "growth_stalled",
@@ -27,7 +26,7 @@ CONDITIONS = (
     "invent_bias",
     "nurture_bias",
 )
-ACTIONS = (
+SEED_ACTIONS = (
     "prefer_prune",
     "prefer_grow",
     "prefer_migrate",
@@ -35,6 +34,10 @@ ACTIONS = (
     "prefer_nurture",
     "suppress_grow",
 )
+
+# Compat aliases for older imports/tests.
+CONDITIONS = SEED_CONDITIONS
+ACTIONS = SEED_ACTIONS
 
 
 @dataclass
@@ -79,7 +82,7 @@ def _seed_rules() -> list[MetaRule]:
 
 @dataclass
 class MetaPolicy:
-    """Learned weights + revisable rule list."""
+    """Weights + revisable rules + extensible condition/action kind registries."""
 
     policy_id: str = field(default_factory=lambda: f"pol-{uuid.uuid4().hex[:8]}")
     grow_weight: float = 1.0
@@ -89,7 +92,11 @@ class MetaPolicy:
     nurture_weight: float = 0.4
     updates: int = 0
     rules: list[MetaRule] = field(default_factory=_seed_rules)
-    rule_revisions: int = 0  # increments when rules added/disabled
+    rule_revisions: int = 0
+    # Novel kinds: name → definition (not in SEED_* alone).
+    condition_kinds: dict[str, dict[str, Any]] = field(default_factory=dict)
+    action_kinds: dict[str, dict[str, Any]] = field(default_factory=dict)
+    kind_revisions: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,7 +108,10 @@ class MetaPolicy:
             "nurture_weight": self.nurture_weight,
             "updates": self.updates,
             "rule_revisions": self.rule_revisions,
+            "kind_revisions": self.kind_revisions,
             "rules": [r.to_dict() for r in self.rules],
+            "condition_kinds": self.condition_kinds,
+            "action_kinds": self.action_kinds,
         }
 
     @classmethod
@@ -122,7 +132,16 @@ class MetaPolicy:
             updates=int(data.get("updates", 0) or 0),
             rules=rules,
             rule_revisions=int(data.get("rule_revisions", 0) or 0),
+            condition_kinds=dict(data.get("condition_kinds") or {}),
+            action_kinds=dict(data.get("action_kinds") or {}),
+            kind_revisions=int(data.get("kind_revisions", 0) or 0),
         )
+
+    def known_conditions(self) -> set[str]:
+        return set(SEED_CONDITIONS) | set(self.condition_kinds)
+
+    def known_actions(self) -> set[str]:
+        return set(SEED_ACTIONS) | set(self.action_kinds)
 
 
 def policy_path(mind_store: Path | str | None = None) -> Path:
@@ -147,17 +166,36 @@ def save_policy(policy: MetaPolicy, mind_store: Path | str | None = None) -> Pat
     return path
 
 
-def _signals_from_entries(
-    entries: list[JournalEntry],
-) -> dict[str, int]:
-    counts = {
-        "flags_high": 0,
-        "growth_fruitful": 0,
-        "growth_stalled": 0,
-        "structure_hungry": 0,
-        "invent_bias": 0,
-        "nurture_bias": 0,
+def _signal_vector(entries: list[JournalEntry]) -> dict[str, float]:
+    """Numeric signals derived from journal — basis for novel conditions."""
+    vec = {
+        "flags": 0.0,
+        "grow_count": 0.0,
+        "node_delta": 0.0,
+        "prune_count": 0.0,
+        "fruitful": 0.0,
+        "stalled": 0.0,
+        "hungry": 0.0,
     }
+    for entry in entries:
+        sig = entry.signals or {}
+        vec["flags"] += float(sig.get("flags", 0) or 0)
+        vec["grow_count"] += float(sig.get("grow_count", 0) or 0)
+        vec["node_delta"] += float(sig.get("node_delta", 0) or 0)
+        vec["prune_count"] += float(sig.get("prune_count", 0) or 0)
+        if entry.reflection == "growth_fruitful":
+            vec["fruitful"] += 1
+        if entry.reflection == "growth_stalled":
+            vec["stalled"] += 1
+        if entry.reflection == "structure_hungry":
+            vec["hungry"] += 1
+        if entry.reflection == "challenge_pressure":
+            vec["flags"] += 1
+    return vec
+
+
+def _signals_from_entries(entries: list[JournalEntry]) -> dict[str, int]:
+    counts = {k: 0 for k in SEED_CONDITIONS}
     for entry in entries:
         if entry.reflection == "challenge_pressure" or int(
             entry.signals.get("flags", 0) or 0
@@ -176,11 +214,162 @@ def _signals_from_entries(
     return counts
 
 
+def register_condition_kind(
+    policy: MetaPolicy,
+    *,
+    name: str,
+    definition: dict[str, Any],
+) -> str:
+    """Register a new condition kind beyond the seed DSL."""
+    if name in SEED_CONDITIONS:
+        return name
+    if name not in policy.condition_kinds:
+        policy.condition_kinds[name] = definition
+        policy.kind_revisions += 1
+    return name
+
+
+def register_action_kind(
+    policy: MetaPolicy,
+    *,
+    name: str,
+    definition: dict[str, Any],
+) -> str:
+    """Register a new action kind beyond the seed DSL."""
+    if name in SEED_ACTIONS:
+        return name
+    if name not in policy.action_kinds:
+        policy.action_kinds[name] = definition
+        policy.kind_revisions += 1
+    return name
+
+
+def _eval_condition(
+    name: str,
+    policy: MetaPolicy,
+    seed_counts: dict[str, int],
+    vec: dict[str, float],
+) -> bool:
+    if name in SEED_CONDITIONS:
+        return seed_counts.get(name, 0) >= 1
+    spec = policy.condition_kinds.get(name)
+    if not spec:
+        return False
+    kind = spec.get("kind")
+    if kind == "all":
+        return all(
+            _eval_condition(c, policy, seed_counts, vec) for c in spec.get("of", [])
+        )
+    if kind == "any":
+        return any(
+            _eval_condition(c, policy, seed_counts, vec) for c in spec.get("of", [])
+        )
+    if kind == "threshold":
+        signal = str(spec.get("signal", ""))
+        op = str(spec.get("op", ">="))
+        value = float(spec.get("value", 0))
+        actual = float(vec.get(signal, 0.0))
+        if op == ">=":
+            return actual >= value
+        if op == ">":
+            return actual > value
+        if op == "<=":
+            return actual <= value
+        if op == "==":
+            return actual == value
+    return False
+
+
+def revise_kinds_from_outcomes(
+    policy: MetaPolicy,
+    entries: list[JournalEntry],
+) -> MetaPolicy:
+    """Invent new condition/action kinds from co-occurring signals."""
+    if len(entries) < 2:
+        return policy
+    seed_counts = _signals_from_entries(entries)
+    vec = _signal_vector(entries)
+    active_seeds = sorted(k for k, v in seed_counts.items() if v >= 1)
+
+    # Compound condition when two seed conditions co-occur.
+    if len(active_seeds) >= 2:
+        a, b = active_seeds[0], active_seeds[1]
+        cname = f"cond_{a[:6]}_{b[:6]}"
+        register_condition_kind(
+            policy,
+            name=cname,
+            definition={"kind": "all", "of": [a, b], "origin": "learned"},
+        )
+        # Rule using the novel condition → parameterized invent bias action.
+        aname = f"act_boost_invent_{a[:4]}"
+        register_action_kind(
+            policy,
+            name=aname,
+            definition={
+                "kind": "boost",
+                "target": "invent",
+                "amount": 1.25,
+                "origin": "learned",
+            },
+        )
+        existing = {(r.when, r.then) for r in policy.rules if r.enabled}
+        if (cname, aname) not in existing:
+            policy.rules.append(
+                MetaRule(
+                    f"r-kind-{uuid.uuid4().hex[:4]}",
+                    cname,
+                    aname,
+                    strength=1.2,
+                    origin="learned",
+                )
+            )
+            policy.rule_revisions += 1
+
+    # Threshold condition on raw node_delta — not in seed enum.
+    if vec.get("node_delta", 0) >= 2:
+        tname = "cond_node_delta_ge_2"
+        register_condition_kind(
+            policy,
+            name=tname,
+            definition={
+                "kind": "threshold",
+                "signal": "node_delta",
+                "op": ">=",
+                "value": 2,
+                "origin": "learned",
+            },
+        )
+        aname = "act_set_grow_budget_2"
+        register_action_kind(
+            policy,
+            name=aname,
+            definition={
+                "kind": "set_grow_budget",
+                "value": 2,
+                "origin": "learned",
+            },
+        )
+        existing = {(r.when, r.then) for r in policy.rules if r.enabled}
+        if (tname, aname) not in existing:
+            policy.rules.append(
+                MetaRule(
+                    f"r-thr-{uuid.uuid4().hex[:4]}",
+                    tname,
+                    aname,
+                    strength=1.0,
+                    origin="learned",
+                )
+            )
+            policy.rule_revisions += 1
+
+    return policy
+
+
 def revise_rules_from_outcomes(
     policy: MetaPolicy,
     entries: list[JournalEntry] | list[dict[str, Any]],
 ) -> MetaPolicy:
-    """Add/disable rules from experience — not only weight tweaks."""
+    """Add/disable seed-level rules, then grow novel kinds."""
     if not entries:
         return policy
     normalized: list[JournalEntry] = []
@@ -194,10 +383,11 @@ def revise_rules_from_outcomes(
 
     def _learn(when: str, then: str, strength: float) -> None:
         nonlocal policy
-        if when not in CONDITIONS or then not in ACTIONS:
-            return
+        if when not in policy.known_conditions() or then not in policy.known_actions():
+            # Only seed-pair learn here; novel kinds handled separately.
+            if when not in SEED_CONDITIONS or then not in SEED_ACTIONS:
+                return
         if (when, then) in existing:
-            # Strengthen existing learned/seed rule.
             for r in policy.rules:
                 if r.when == when and r.then == then and r.enabled:
                     r.strength = min(3.0, r.strength + 0.25)
@@ -211,12 +401,10 @@ def revise_rules_from_outcomes(
         existing.add((when, then))
         policy.rule_revisions += 1
 
-    # Fruitful growth while flags also present → learn invent after prune clears.
     if counts["growth_fruitful"] >= 2 and counts["flags_high"] == 0:
         _learn("growth_fruitful", "prefer_invent", 1.2)
     if counts["flags_high"] >= 2:
         _learn("flags_high", "prefer_prune", 1.5)
-        # Disable grow-preferring seed rule under sustained challenge.
         for r in policy.rules:
             if (
                 r.origin == "seed"
@@ -233,6 +421,7 @@ def revise_rules_from_outcomes(
         _learn("structure_hungry", "prefer_grow", 1.0)
         _learn("structure_hungry", "prefer_nurture", 0.9)
 
+    policy = revise_kinds_from_outcomes(policy, normalized)
     return policy
 
 
@@ -240,7 +429,7 @@ def update_policy_from_journal(
     policy: MetaPolicy,
     entries: list[JournalEntry] | list[dict[str, Any]],
 ) -> MetaPolicy:
-    """Adjust weights AND revise rules from recent journal outcomes."""
+    """Adjust weights AND revise rules/kinds from journal outcomes."""
     if not entries:
         return policy
     normalized: list[JournalEntry] = []
@@ -279,8 +468,9 @@ def update_policy_from_journal(
             changed = True
 
     before_rev = policy.rule_revisions
+    before_kind = policy.kind_revisions
     policy = revise_rules_from_outcomes(policy, normalized)
-    if policy.rule_revisions != before_rev:
+    if policy.rule_revisions != before_rev or policy.kind_revisions != before_kind:
         changed = True
 
     if changed:
@@ -302,12 +492,33 @@ def update_policy_from_journal(
     return policy
 
 
-def _match_conditions(
-    entries: list[JournalEntry],
-) -> set[str]:
-    counts = _signals_from_entries(entries)
-    active = {k for k, v in counts.items() if v >= 1}
-    return active
+def _apply_action(
+    then: str,
+    policy: MetaPolicy,
+    scores: dict[str, float],
+    strength: float,
+    extras: dict[str, Any],
+) -> None:
+    """Apply seed or novel action kinds into scores/extras."""
+    if then in SEED_ACTIONS:
+        scores[then] = scores.get(then, 0.0) + strength
+        return
+    spec = policy.action_kinds.get(then)
+    if not spec:
+        return
+    kind = spec.get("kind")
+    if kind == "boost":
+        target = str(spec.get("target", "invent"))
+        amount = float(spec.get("amount", 1.0)) * strength
+        key = f"prefer_{target}" if not target.startswith("prefer_") else target
+        if key not in scores:
+            scores[key] = 0.0
+        scores[key] += amount
+        # Also bump invent weight channel for want_* flags.
+        if "invent" in target:
+            scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + amount
+    elif kind == "set_grow_budget":
+        extras["grow_budget_override"] = int(spec.get("value", 1))
 
 
 def strategy_from_policy(
@@ -316,7 +527,7 @@ def strategy_from_policy(
     max_new_pairs: int = 1,
     journal_entries: list[JournalEntry] | list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Derive strategy from active rules (primary) then weights (tie-break)."""
+    """Derive strategy from rules over seed + learned kinds."""
     normalized: list[JournalEntry] = []
     for row in journal_entries or []:
         if isinstance(row, JournalEntry):
@@ -324,12 +535,11 @@ def strategy_from_policy(
         else:
             normalized.append(JournalEntry.from_dict(row))
 
-    active_conds = _match_conditions(normalized) if normalized else set()
-    # If no journal yet, treat as structure_hungry so seed grow rule can fire.
-    if not active_conds:
-        active_conds = {"structure_hungry"}
+    seed_counts = _signals_from_entries(normalized) if normalized else {}
+    vec = _signal_vector(normalized) if normalized else {}
+    if not normalized:
+        seed_counts = {"structure_hungry": 1}
 
-    fired: list[MetaRule] = []
     scores = {
         "prefer_prune": 0.0,
         "prefer_grow": 0.0,
@@ -338,44 +548,51 @@ def strategy_from_policy(
         "prefer_nurture": 0.0,
         "suppress_grow": 0.0,
     }
-    for rule in policy.rules:
-        if not rule.enabled or rule.when not in active_conds:
-            continue
-        if rule.then in scores:
-            scores[rule.then] += rule.strength
-            fired.append(rule)
+    extras: dict[str, Any] = {}
+    fired: list[str] = []
+    novel_kind_fired = False
 
-    # Blend small weight prior so empty rule-fire still works.
+    for rule in policy.rules:
+        if not rule.enabled:
+            continue
+        if not _eval_condition(rule.when, policy, seed_counts, vec):
+            continue
+        if rule.when in policy.condition_kinds or rule.then in policy.action_kinds:
+            novel_kind_fired = True
+        _apply_action(rule.then, policy, scores, rule.strength, extras)
+        fired.append(rule.rule_id)
+
     scores["prefer_grow"] += policy.grow_weight * 0.15
     scores["prefer_prune"] += policy.prune_weight * 0.15
     scores["prefer_migrate"] += policy.migrate_weight * 0.15
     scores["prefer_invent"] += policy.invent_weight * 0.15
     scores["prefer_nurture"] += policy.nurture_weight * 0.15
 
-    # Pick dominant actionable preference (ignore suppress as dominant label).
-    actionable = {
-        k: v
-        for k, v in scores.items()
-        if k != "suppress_grow"
-    }
+    actionable = {k: v for k, v in scores.items() if k != "suppress_grow"}
     dominant = max(actionable, key=actionable.get)
-    rule_ids = [r.rule_id for r in fired]
     suppress = scores["suppress_grow"] > scores["prefer_grow"]
+    grow_budget = int(extras.get("grow_budget_override", max_new_pairs))
 
     base = {
         "from_journal": True,
         "from_policy": True,
         "policy_id": policy.policy_id,
-        "active_rules": rule_ids,
+        "active_rules": fired,
         "rule_revisions": policy.rule_revisions,
+        "kind_revisions": policy.kind_revisions,
+        "novel_kinds": novel_kind_fired,
+        "condition_kind_count": len(policy.condition_kinds),
+        "action_kind_count": len(policy.action_kinds),
     }
+    tag = "kinds" if novel_kind_fired else "rules"
+
     if dominant == "prefer_prune" or suppress:
         return {
             **base,
             "grow_budget": 0,
             "prefer_prune": True,
             "prefer_migrate": False,
-            "reason": f"policy:{policy.policy_id}:rules:prune",
+            "reason": f"policy:{policy.policy_id}:{tag}:prune",
             "want_invent": scores["prefer_invent"] > 1.0,
             "want_nurture": scores["prefer_nurture"] > 1.0,
         }
@@ -385,36 +602,36 @@ def strategy_from_policy(
             "grow_budget": 0,
             "prefer_prune": False,
             "prefer_migrate": True,
-            "reason": f"policy:{policy.policy_id}:rules:migrate",
+            "reason": f"policy:{policy.policy_id}:{tag}:migrate",
             "want_invent": scores["prefer_invent"] > 0.8,
             "want_nurture": scores["prefer_nurture"] > 0.8,
         }
     if dominant == "prefer_invent":
         return {
             **base,
-            "grow_budget": 0 if suppress else max(1, max_new_pairs),
+            "grow_budget": 0 if suppress else max(1, grow_budget),
             "prefer_prune": False,
             "prefer_migrate": False,
-            "reason": f"policy:{policy.policy_id}:rules:invent",
+            "reason": f"policy:{policy.policy_id}:{tag}:invent",
             "want_invent": True,
             "want_nurture": scores["prefer_nurture"] >= 0.5,
         }
     if dominant == "prefer_nurture":
         return {
             **base,
-            "grow_budget": 0 if suppress else max(1, max_new_pairs),
+            "grow_budget": 0 if suppress else max(1, grow_budget),
             "prefer_prune": False,
             "prefer_migrate": False,
-            "reason": f"policy:{policy.policy_id}:rules:nurture",
+            "reason": f"policy:{policy.policy_id}:{tag}:nurture",
             "want_invent": scores["prefer_invent"] >= 0.5,
             "want_nurture": True,
         }
     return {
         **base,
-        "grow_budget": 0 if suppress else max(1, max_new_pairs),
+        "grow_budget": 0 if suppress else max(1, grow_budget),
         "prefer_prune": False,
         "prefer_migrate": False,
-        "reason": f"policy:{policy.policy_id}:rules:grow",
+        "reason": f"policy:{policy.policy_id}:{tag}:grow",
         "want_invent": scores["prefer_invent"] >= scores["prefer_prune"],
         "want_nurture": scores["prefer_nurture"] >= 0.7,
     }

@@ -458,9 +458,13 @@ class OpenMindScaffoldTests(unittest.TestCase):
             self.assertTrue(result.get("invented"))
             inv = result["invention"]
             self.assertEqual(inv["source"], "concept")
-            self.assertTrue(str(inv.get("why", "")).startswith("concept:"))
+            self.assertTrue(
+                str(inv.get("why", "")).startswith("concept:open-partition:")
+            )
             self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["cause"]))
             self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["effect"]))
+            self.assertFalse(concepts_mod.is_role_axis_label(inv["cause"]))
+            self.assertFalse(concepts_mod.is_role_axis_label(inv["effect"]))
             self.assertNotIn(normalize(inv["cause"]), alphabet)
 
     def test_policy_revises_rules_not_only_weights(self):
@@ -469,6 +473,7 @@ class OpenMindScaffoldTests(unittest.TestCase):
 
         pol = policy_mod.MetaPolicy()
         before = pol.rule_revisions
+        before_kinds = pol.kind_revisions
         entries = [
             JournalEntry(
                 cycle=i,
@@ -480,7 +485,10 @@ class OpenMindScaffoldTests(unittest.TestCase):
         ]
         pol = policy_mod.update_policy_from_journal(pol, entries)
         self.assertGreater(pol.rule_revisions, before)
+        self.assertGreater(pol.kind_revisions, before_kinds)
         self.assertTrue(any(r.origin == "learned" for r in pol.rules))
+        self.assertTrue(pol.condition_kinds)
+        self.assertTrue(pol.action_kinds)
 
         # Same weights, different rule sets → different strategies.
         a = policy_mod.MetaPolicy(updates=1, grow_weight=1.0, prune_weight=1.0)
@@ -496,6 +504,8 @@ class OpenMindScaffoldTests(unittest.TestCase):
         self.assertTrue(sb["prefer_prune"])
 
     def test_form_specialty_capability_not_just_cycle(self):
+        from beyond_binary import capability as capability_mod
+
         with tempfile.TemporaryDirectory() as tmp:
             mind_path = Path(tmp) / "mind.json"
             eng = Engine(seed_minimal_hot_cold())
@@ -503,15 +513,20 @@ class OpenMindScaffoldTests(unittest.TestCase):
             record = bodies.embody(
                 eng, name="optic-form", domain="optical", mind_store=mind_path
             )
-            self.assertTrue(record.specialty)
+            self.assertEqual(record.specialty, "interpret_program")
+            self.assertTrue(record.capability_path)
             mod, fn = bodies.load_form_specialty(record)
             caps = list(mod.CAPABILITIES)
-            self.assertEqual(caps[0], record.specialty)
+            self.assertEqual(caps[0], "interpret_program")
             self.assertNotIn(caps[0], {"think", "answer", "load_engine"})
             out = fn()
-            self.assertEqual(out["capability"], caps[0])
+            self.assertEqual(out["capability"], "interpret_program")
             self.assertTrue(out["cause_pole"])
             self.assertTrue(out["effect_pole"])
+            self.assertIsInstance(out.get("ops"), list)
+            self.assertGreaterEqual(len(out["ops"]), 2)
+            prog = capability_mod.load_program(record.store_path)
+            self.assertEqual(out["program_id"], prog.program_id)
 
     def test_self_directed_live_without_every_flags(self):
         from beyond_binary.seed import seed_same_center

@@ -347,18 +347,21 @@ def run_verification() -> dict[str, Any]:
         alphabet_before = invent_mod.closed_invent_alphabet(peng, [])
         concept_inv = mind.invent_domain(peng, prim_path, cycle=pcenter._cycle_index)
         inv_p = concept_inv.get("invention") or {}
+        why_p = str(inv_p.get("why", ""))
         concept_ok = (
             bool(concept_inv.get("invented"))
             and inv_p.get("source") == "concept"
             and normalize_absent(inv_p.get("cause"), alphabet_before)
             and normalize_absent(inv_p.get("effect"), alphabet_before)
-            and str(inv_p.get("why", "")).startswith("concept:")
+            and why_p.startswith("concept:open-partition:")
             and not concepts_mod.is_suffix_primitive_label(str(inv_p.get("cause", "")))
             and not concepts_mod.is_suffix_primitive_label(str(inv_p.get("effect", "")))
+            and not concepts_mod.is_role_axis_label(str(inv_p.get("cause", "")))
+            and not concepts_mod.is_role_axis_label(str(inv_p.get("effect", "")))
         )
         gate(
             "C4e",
-            "Concept formation beyond pressure-suffix primitives",
+            "Open partition concept mint (not role-axis / suffix primitives)",
             concept_ok,
             str(inv_p or concept_inv.get("reason")),
         )
@@ -374,21 +377,30 @@ def run_verification() -> dict[str, Any]:
         pc.think(8)
         pol = policy_mod.load_policy(pol_path)
         learned_rules = [r for r in pol.rules if r.origin == "learned" and r.enabled]
+        novel_conds = set(pol.condition_kinds) - set(policy_mod.SEED_CONDITIONS)
+        novel_acts = set(pol.action_kinds) - set(policy_mod.SEED_ACTIONS)
+        reason = str(pc.strategy.reason)
         pol_ok = (
             policy_mod.policy_path(pol_path).exists()
             and pol.updates >= 1
             and pol.rule_revisions >= 1
+            and pol.kind_revisions >= 1
             and len(learned_rules) >= 1
+            and len(novel_conds) >= 1
+            and len(novel_acts) >= 1
             and pc.strategy.from_policy
-            and ":rules:" in str(pc.strategy.reason)
+            and (":rules:" in reason or ":kinds:" in reason)
         )
         gate(
             "C3p",
-            "Metacognition revises its own rules from experience",
+            "Metacognition invents new condition/action kinds from experience",
             pol_ok,
             (
                 f"updates={pol.updates} revisions={pol.rule_revisions} "
-                f"learned={len(learned_rules)} reason={pc.strategy.reason}"
+                f"kind_revisions={pol.kind_revisions} "
+                f"novel_conds={sorted(novel_conds)[:3]} "
+                f"novel_acts={sorted(novel_acts)[:3]} "
+                f"learned={len(learned_rules)} reason={reason}"
             ),
         )
 
@@ -447,12 +459,18 @@ def run_verification() -> dict[str, Any]:
             ),
         )
 
-        # Form that matters (bar §4 scaffolding): body-specific specialty capability
+        # Form that matters (bar §4 scaffolding): interpreted CapProgram, not pole template
+        from . import capability as capability_mod
+
         form_path = root / "form-mind.json"
         feng = Engine(seed_minimal_hot_cold())
         store.save(feng.torus, form_path)
         frec = bodies.embody(
             feng, name="specialty-body", domain="optical", mind_store=form_path
+        )
+        # Second body in a different domain — programs must differ by structure.
+        frec2 = bodies.embody(
+            feng, name="thermal-body", domain="thermal", mind_store=form_path
         )
         form_ok = False
         form_ev = ""
@@ -460,24 +478,40 @@ def run_verification() -> dict[str, Any]:
             mod, specialty_fn = bodies.load_form_specialty(frec)
             caps = list(getattr(mod, "CAPABILITIES", []) or [])
             result = specialty_fn()
+            prog = capability_mod.load_program(frec.store_path)
+            prog2 = capability_mod.load_program(frec2.store_path)
+            entry = str(caps[0] if caps else "")
+            # Reject legacy pulse_<cause>_to_<effect> template specialty names.
+            template_like = entry.startswith("pulse_") and "_to_" in entry
             form_ok = (
                 bool(caps)
-                and caps[0] not in {"think", "answer", "load_engine"}
+                and entry == "interpret_program"
+                and entry not in {"think", "answer", "load_engine"}
                 and callable(specialty_fn)
-                and result.get("capability") == caps[0]
+                and result.get("capability") == "interpret_program"
+                and result.get("program_id") == prog.program_id
+                and isinstance(result.get("ops"), list)
+                and len(result.get("ops") or []) >= 2
                 and result.get("cause_pole")
                 and result.get("effect_pole")
-                and frec.specialty == caps[0]
+                and frec.specialty == "interpret_program"
+                and frec.capability_path
+                and Path(frec.capability_path).exists()
+                and len(prog.ops) >= 2
+                and prog.program_id != prog2.program_id
+                and not template_like
             )
             form_ev = (
-                f"specialty={caps[0]} cause={result.get('cause_pole')} "
-                f"effect={result.get('effect_pole')} gradient={result.get('gradient')}"
+                f"entry={caps[0]} program={prog.program_id} "
+                f"ops={result.get('ops')} revisions={prog.revisions} "
+                f"other_program={prog2.program_id} "
+                f"result_keys={sorted((result.get('result') or {}).keys())}"
             )
         except Exception as exc:  # noqa: BLE001
             form_ev = str(exc)
         gate(
             "C4f",
-            "Forms expose non-prespecified specialty capability",
+            "Forms run interpreted capability programs (not pole-templates)",
             form_ok,
             form_ev,
         )
@@ -510,11 +544,12 @@ def run_verification() -> dict[str, Any]:
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Concept/role invent, rule-revising policy, and specialty forms are "
-            "stronger scaffolds — still bounded vocabularies/templates. Missing: "
-            "unconstrained concept formation, metacognition that invents new "
-            "condition/action kinds, forms whose behavior is not generated from "
-            "pole-templates (sentience-evidence-bar.md)."
+            "Open-partition concept mint, kind-revising policy, and CapProgram "
+            "forms are stronger scaffolds — still bounded generators/schemas "
+            "(syllabic alphabet, seed+threshold/compound kinds, opcode registry). "
+            "Missing vs sentience-evidence-bar.md: unconstrained concept formation "
+            "beyond mint alphabets, metacognition beyond registered kind schemas, "
+            "forms whose ops are not drawn from a closed opcode set."
         ),
     }
     gates.append(sentience)

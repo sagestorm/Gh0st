@@ -1,9 +1,8 @@
-"""Structural concept formation — new opposite-state domains from graph roles.
+"""Open concept formation from graph partitions — no fixed role-axis name table.
 
-Not pressure-stem suffixes (`{stem}ure`). Concepts are derived from measurable
-roles on the living torus (branching, bridging, depth), then named with
-role-tokens + a graph fingerprint so labels fall outside the closed invent
-alphabet.
+Concepts are opposite-state domains whose labels are minted from topology
+partitions (degree / depth splits) via an open syllabic generator. Names are
+not looked up from ROLE_AXES and are not pressure-stem suffixes.
 """
 
 from __future__ import annotations
@@ -11,19 +10,16 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from .engine import Engine, is_bit_collapse_topic, normalize
 from .model import Hemisphere
 
 
-# Role → opposite-state concept axes (structural, not stem morphs).
-ROLE_AXES: tuple[tuple[str, str, str], ...] = (
-    ("branching", "fecund", "sparse"),
-    ("bridging", "nexus", "island"),
-    ("depth", "rooted", "shallow"),
-    ("symmetry", "balanced", "skewed"),
-)
+# Open syllabic atoms — generator alphabet, not concept labels.
+_ONSETS = "bdfghklmnprstwyz"
+_VOWELS = "aeiou"
+_CODAS = "knlrsxz"
 
 
 @dataclass(frozen=True)
@@ -31,7 +27,7 @@ class ConceptProposal:
     cause: str
     effect: str
     instance: str
-    role: str
+    role: str  # partition tag for provenance (not a name-table key)
     why: str
     metrics: dict[str, float]
 
@@ -47,9 +43,28 @@ class ConceptProposal:
         }
 
 
-def _fingerprint(eng: Engine) -> str:
-    keys = ",".join(sorted(eng.torus.nodes.keys()))
-    return hashlib.sha1(keys.encode("utf-8")).hexdigest()[:6]
+def _digest(parts: list[str]) -> str:
+    raw = "|".join(parts).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def mint_token(seed: str, *, syllables: int = 2) -> str:
+    """Mint a pronounceable token from a seed digest — not a fixed label table."""
+    h = _digest([seed])
+    chars: list[str] = []
+    # Walk hex pairs into onset-vowel-coda syllables.
+    i = 0
+    for _ in range(max(1, syllables)):
+        o = _ONSETS[int(h[i % len(h)], 16) % len(_ONSETS)]
+        v = _VOWELS[int(h[(i + 1) % len(h)], 16) % len(_VOWELS)]
+        c = _CODAS[int(h[(i + 2) % len(h)], 16) % len(_CODAS)]
+        chars.extend([o, v, c])
+        i += 3
+    token = "".join(chars)
+    # Ensure token isn't accidentally a bit-collapse word.
+    if is_bit_collapse_topic(token):
+        token = f"x{token}"
+    return token
 
 
 def _child_count(eng: Engine, name: str) -> int:
@@ -63,59 +78,47 @@ def _depth(eng: Engine, name: str) -> int:
         return 0
 
 
-def graph_role_metrics(eng: Engine) -> dict[str, float]:
-    """Aggregate structural metrics used to pick a concept axis."""
-    nodes = list(eng.torus.nodes.values())
-    if not nodes:
-        return {
-            "branching": 0.0,
-            "bridging": 0.0,
-            "depth": 0.0,
-            "symmetry": 0.0,
-        }
-    branching = sum(_child_count(eng, n.name) for n in nodes) / len(nodes)
-    # Bridging: nodes whose opposite lives under a different root instance chain.
-    bridges = 0
-    for n in nodes:
-        if n.hemisphere is not Hemisphere.CAUSE or not n.opposite:
-            continue
-        if n.parent is None:
-            continue
-        opp = eng.torus.nodes.get(n.opposite)
-        if opp and opp.parent and normalize(n.parent) != normalize(opp.parent or ""):
-            # Cross-parent reciprocal ≈ structural bridge.
-            bridges += 1
-    bridging = bridges / max(1, len(nodes) // 2)
-    depth = sum(_depth(eng, n.name) for n in nodes) / len(nodes)
-    # Symmetry: fraction of reciprocal opposite links.
-    sym = 0
-    for n in nodes:
-        if not n.opposite:
-            continue
-        opp = eng.torus.nodes.get(n.opposite)
-        if opp and opp.opposite == normalize(n.name):
-            sym += 1
-    symmetry = sym / len(nodes)
+def partition_cause_nodes(eng: Engine) -> dict[str, list[str]]:
+    """Partition cause-side nodes by structural features (no name table)."""
+    causes = [
+        n
+        for n in eng.torus.nodes.values()
+        if n.hemisphere is Hemisphere.CAUSE
+    ]
+    if not causes:
+        return {}
+    degrees = [(n.name, _child_count(eng, n.name)) for n in causes]
+    depths = [(n.name, _depth(eng, n.name)) for n in causes]
+    deg_vals = sorted(d for _, d in degrees)
+    mid_deg = deg_vals[len(deg_vals) // 2]
+    depth_vals = sorted(d for _, d in depths)
+    mid_depth = depth_vals[len(depth_vals) // 2]
+    high_deg = sorted(n for n, d in degrees if d >= mid_deg)
+    low_deg = sorted(n for n, d in degrees if d < mid_deg)
+    deep = sorted(n for n, d in depths if d >= mid_depth)
+    shallow = sorted(n for n, d in depths if d < mid_depth)
     return {
-        "branching": float(branching),
-        "bridging": float(bridging),
-        "depth": float(depth),
-        "symmetry": float(symmetry),
+        "degree_high_vs_low": high_deg,
+        "degree_low": low_deg,
+        "depth_deep": deep,
+        "depth_shallow": shallow,
     }
 
 
-def _pick_axis(metrics: dict[str, float]) -> tuple[str, str, str]:
-    """Choose the role axis with the strongest structural signal."""
-    # Prefer axes that are "activated" (non-trivial structure).
-    scored: list[tuple[float, tuple[str, str, str]]] = []
-    for role, cause, effect in ROLE_AXES:
-        score = metrics.get(role, 0.0)
-        if role == "symmetry":
-            # Low symmetry is the interesting pressure.
-            score = 1.0 - score
-        scored.append((score, (role, cause, effect)))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[0][1]
+def graph_partition_metrics(eng: Engine) -> dict[str, float]:
+    parts = partition_cause_nodes(eng)
+    n = max(1, len(eng.torus.nodes))
+    return {
+        "nodes": float(len(eng.torus.nodes)),
+        "degree_split": float(
+            abs(len(parts.get("degree_high_vs_low", [])) - len(parts.get("degree_low", [])))
+        )
+        / n,
+        "depth_split": float(
+            abs(len(parts.get("depth_deep", [])) - len(parts.get("depth_shallow", [])))
+        )
+        / n,
+    }
 
 
 def form_concepts(
@@ -125,55 +128,64 @@ def form_concepts(
     used_instances: set[str],
     limit: int = 3,
 ) -> list[ConceptProposal]:
-    """Propose concept domains from graph roles; labels must leave the alphabet."""
+    """Propose concepts by minting labels from topology partitions."""
     if len(eng.torus.nodes) < 4:
         return []
-    metrics = graph_role_metrics(eng)
-    fp = _fingerprint(eng)
+    parts = partition_cause_nodes(eng)
+    metrics = graph_partition_metrics(eng)
     out: list[ConceptProposal] = []
-    # Rank all axes; emit novel labels per axis until limit.
-    ranked = sorted(
-        ROLE_AXES,
-        key=lambda ax: (
-            (1.0 - metrics["symmetry"])
-            if ax[0] == "symmetry"
-            else metrics.get(ax[0], 0.0)
-        ),
-        reverse=True,
-    )
-    for role, base_c, base_e in ranked:
-        # Role token + fingerprint ⇒ not a closed stem-suffix of a pressure node.
-        cause = f"{base_c}-{fp}"
-        effect = f"{base_e}-{fp}"
-        if is_bit_collapse_topic(cause) or is_bit_collapse_topic(effect):
+
+    # Each complementary partition pair → one opposite-state concept.
+    pairs = [
+        ("degree_high_vs_low", "degree_low", "partition:degree"),
+        ("depth_deep", "depth_shallow", "partition:depth"),
+    ]
+    for left_key, right_key, tag in pairs:
+        left = parts.get(left_key) or []
+        right = parts.get(right_key) or []
+        if not left or not right:
             continue
+        # Seed tokens from member sets — open mint, not ROLE_AXES lookup.
+        cause = mint_token("c:" + ",".join(left), syllables=2)
+        effect = mint_token("e:" + ",".join(right), syllables=2)
+        if normalize(cause) == normalize(effect):
+            effect = mint_token("e2:" + ",".join(right) + cause, syllables=2)
+        # Collision avoidance against closed alphabet.
+        salt = 0
+        while (
+            normalize(cause) in alphabet
+            or normalize(effect) in alphabet
+            or is_bit_collapse_topic(cause)
+            or is_bit_collapse_topic(effect)
+        ) and salt < 8:
+            salt += 1
+            cause = mint_token(f"c{salt}:" + ",".join(left), syllables=2 + salt % 2)
+            effect = mint_token(f"e{salt}:" + ",".join(right), syllables=2 + salt % 2)
         if normalize(cause) in alphabet or normalize(effect) in alphabet:
-            # Slightly mutate fingerprint slice if collision.
-            cause = f"{base_c}x{fp[:4]}"
-            effect = f"{base_e}x{fp[:4]}"
-            if normalize(cause) in alphabet or normalize(effect) in alphabet:
-                continue
+            continue
+        if normalize(cause) == normalize(effect):
+            continue
         instance = f"{normalize(cause)}-{normalize(effect)}"
         if normalize(instance) in used_instances or normalize(instance) in alphabet:
             continue
-        # Reject if it looks like the old pressure-suffix primitive pattern.
-        if re.search(r"(ure|iveopp)$", normalize(cause)) or normalize(
-            effect
-        ).startswith("un") and normalize(effect).endswith("ure"):
+        # Reject legacy suffix-primitive lookalikes.
+        if is_suffix_primitive_label(cause) or is_suffix_primitive_label(effect):
+            continue
+        # Reject legacy role-axis table labels (fecund/sparse/…).
+        if is_role_axis_label(cause) or is_role_axis_label(effect):
             continue
         why = (
-            f"concept:{role}:"
-            f"branching={metrics['branching']:.2f},"
-            f"bridging={metrics['bridging']:.2f},"
-            f"depth={metrics['depth']:.2f},"
-            f"symmetry={metrics['symmetry']:.2f}"
+            f"concept:open-partition:{tag}:"
+            f"left={len(left)},right={len(right)},"
+            f"degree_split={metrics['degree_split']:.2f},"
+            f"depth_split={metrics['depth_split']:.2f}"
         )
         out.append(
             ConceptProposal(
                 cause=cause,
                 effect=effect,
                 instance=instance,
-                role=role,
+                role=tag,
                 why=why,
                 metrics=dict(metrics),
             )
@@ -184,16 +196,32 @@ def form_concepts(
 
 
 def is_suffix_primitive_label(label: str) -> bool:
-    """Detect the old pressure-suffix mint pattern (not concept formation)."""
+    """Detect the old pressure-suffix mint pattern."""
     key = normalize(label)
-    if key.endswith("ure") and (key.startswith("un") or not key.startswith("un")):
-        if key.endswith("ure") and len(key) > 4:
-            # hoture / unhoture style
-            if re.fullmatch(r"un?[a-z0-9]{2,}ure", key):
-                return True
+    if re.fullmatch(r"un?[a-z0-9]{2,}ure", key):
+        return True
     if key.startswith("proto") or key.startswith("ecto"):
         return True
-    if key.endswith("iveopp") or key.endswith("less") and len(key) > 5:
-        if re.fullmatch(r"[a-z0-9]+(iveopp|less|al)", key):
-            return True
+    if re.fullmatch(r"[a-z0-9]+(iveopp|less|al)", key):
+        return True
     return False
+
+
+def is_role_axis_label(label: str) -> bool:
+    """Detect previous ROLE_AXES table tokens (no longer used for naming)."""
+    key = normalize(label).split("-")[0]
+    return key in {
+        "fecund",
+        "sparse",
+        "nexus",
+        "island",
+        "rooted",
+        "shallow",
+        "balanced",
+        "skewed",
+    }
+
+
+# Backward-compatible alias used by older verify imports.
+def graph_role_metrics(eng: Engine) -> dict[str, float]:
+    return graph_partition_metrics(eng)
