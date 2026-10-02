@@ -499,7 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
             "--probe",
             action="append",
             default=[],
-            help="answer probe topic (repeatable; defaults water/boiling/warm)",
+            help="answer probe topic (repeatable; defaults multi-domain product probes)",
         )
 
     bind(

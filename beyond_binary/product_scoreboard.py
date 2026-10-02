@@ -20,7 +20,7 @@ from . import search_substrate as search_mod
 from . import store
 from . import substrate as substrate_mod
 
-DEFAULT_PROBES: tuple[str, ...] = ("water", "boiling", "warm")
+DEFAULT_PROBES: tuple[str, ...] = invent_mod.PRODUCT_PROBES
 DEFAULT_DOMAINS: tuple[str, ...] = ("thermal", "ontology", "optical")
 DEFAULT_THINK_STEPS = 6
 

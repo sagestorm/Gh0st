@@ -890,7 +890,15 @@ def search_edit_score_acceptable(before, after) -> bool:
     )
 
 
-_PROBE_TOPICS: tuple[str, ...] = ("water", "boiling", "warm")
+PRODUCT_PROBES: tuple[str, ...] = (
+    "water",
+    "boiling",
+    "warm",
+    "steam",
+    "absence",
+    "bright",
+)
+_PROBE_TOPICS: tuple[str, ...] = PRODUCT_PROBES
 
 
 def _flatten_dual_path_names(dual: Any) -> list[str]:
@@ -925,11 +933,11 @@ def _probe_answer_path_len(eng: Engine, topic: str) -> int | None:
     return total
 
 
-def _thermal_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
-    """#5: typed probe paths must stay domain-coherent.
+def _typed_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
+    """#5/#7: typed probe paths must stay domain-coherent.
 
-    Thermal probe answer paths may only contain thermal-tagged poles.
-    Undomain'd motifs (open/closed, …) and foreign typed domains are rejected.
+    For each probe with a lexicon/inherited domain D, answer-path poles must
+    all carry D (no undomain motifs, no foreign typed domains).
     """
     from . import lexicon as lex
     from . import search_substrate as search_mod
@@ -943,18 +951,17 @@ def _thermal_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
         except RuleError:
             return False
         topic_domain = lex.pole_domain(topic) or search_mod.node_domain(after_eng, topic)
-        if topic_domain != "thermal":
+        if topic_domain is None:
             continue
         for name in _flatten_dual_path_names(after_dual):
             d = lex.pole_domain(norm(name))
-            # Typed foreign domain OR undomain motif on a typed probe path.
-            if d != "thermal":
+            if d != topic_domain:
                 return False
     return True
 
 
-def _thermal_probe_path_economy_ok(before_eng: Engine, after_eng: Engine) -> bool:
-    """#6: refuse invent that lengthens thermal probe answer paths."""
+def _probe_path_economy_ok(before_eng: Engine, after_eng: Engine) -> bool:
+    """#6/#7: refuse invent that lengthens any measured product probe path."""
     for topic in _PROBE_TOPICS:
         before_len = _probe_answer_path_len(before_eng, topic)
         after_len = _probe_answer_path_len(after_eng, topic)
@@ -982,11 +989,11 @@ def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, An
     post = LivingCenter(trial).score()
     if not search_edit_score_acceptable(pre, post):
         return False, pre, post, "score_gate"
-    # #5: no undomain / cross-domain pollution of thermal probe answer paths.
-    if not _thermal_probe_domain_ok(eng, trial):
+    # #5/#7: domain-coherent typed probe paths.
+    if not _typed_probe_domain_ok(eng, trial):
         return False, pre, post, "domain_probe_path"
-    # #6: probe path length must not regress.
-    if not _thermal_probe_path_economy_ok(eng, trial):
+    # #6/#7: probe path length must not regress on any measured probe.
+    if not _probe_path_economy_ok(eng, trial):
         return False, pre, post, "probe_path_len"
     return True, pre, post, "ok"
 

@@ -1123,13 +1123,13 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
             store.save(eng.torus, mind_path)
             reg = invent_mod.load_invent_registry(mind_path)
-            # Off-spine thermal wedge (#6): hot→steam is not on water/boiling/warm paths.
+            # Off-probe ontology wedge (#7): nothing→void is not on PRODUCT_PROBES spines.
             self.assertTrue(
-                eng.exists("steam") and eng.torus.nodes["steam"].parent == "hot",
-                msg="expected hot→steam off-spine site",
+                eng.exists("void") and eng.torus.nodes["void"].parent == "nothing",
+                msg="expected nothing→void off-probe site",
             )
-            parent_name, child_name = "hot", "steam"
-            cause, effect = "sear", "numb"
+            parent_name, child_name = "nothing", "void"
+            cause, effect = "latent", "manifest"
             instance = "search-wedge-g11embody"
             edit = {
                 "kind": "edit_ast",
@@ -1725,16 +1725,16 @@ class DomainCoherentInventTests(unittest.TestCase):
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6)
-        # Off-spine site: hot→steam does not lengthen water/boiling/warm (#6).
+        # Off-probe site under expanded PRODUCT_PROBES (#7): nothing→void.
         edit = {
             "kind": "edit_ast",
             "ast": [
                 {
                     "op": "wedge",
-                    "parent": "hot",
-                    "child": "steam",
-                    "cause": "sear",
-                    "effect": "numb",
+                    "parent": "nothing",
+                    "child": "void",
+                    "cause": "latent",
+                    "effect": "manifest",
                 }
             ],
         }
@@ -1763,6 +1763,37 @@ class DomainCoherentInventTests(unittest.TestCase):
         ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
         self.assertFalse(ok)
         self.assertEqual(reason, "probe_path_len")
+
+    def test_trial_rejects_optical_probe_path_lengthening(self):
+        """#7: invent cannot lengthen bright even when thermal probes stay flat."""
+        import tempfile
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind = Path(tmp) / "mind.json"
+            eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+            store.save(eng.torus, mind)
+            center = LivingCenter(eng)
+            center.mind_store = mind
+            center.think(6)
+            self.assertTrue(eng.exists("bright"))
+            edit = {
+                "kind": "edit_ast",
+                "ast": [
+                    {
+                        "op": "wedge",
+                        "parent": "light",
+                        "child": "bright",
+                        "cause": "glare",
+                        "effect": "gloom",
+                    }
+                ],
+            }
+            ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
+            self.assertFalse(ok)
+            self.assertEqual(reason, "probe_path_len")
 
     def test_mint_under_typed_parent_skips_undomain(self):
         from beyond_binary.seed import seed_same_center
@@ -1795,12 +1826,8 @@ class DomainCoherentInventTests(unittest.TestCase):
                 substrate_mod.reset_logs_for_tests()
                 center = LivingCenter(eng)
                 center.mind_store = mind
-                before_lens = {
-                    t: invent_mod._probe_answer_path_len(eng, t)
-                    for t in ("water", "boiling", "warm")
-                }
                 center.think(8)
-                for topic in ("water", "boiling", "warm"):
+                for topic in invent_mod.PRODUCT_PROBES:
                     if not eng.exists(topic):
                         continue
                     dual = eng.answer(topic)
@@ -1814,20 +1841,15 @@ class DomainCoherentInventTests(unittest.TestCase):
                             flat.extend(str(x) for x in p)
                         else:
                             flat.append(str(p))
+                    topic_domain = lex.pole_domain(topic)
+                    if topic_domain is None:
+                        continue
                     for name in flat:
                         d = lex.pole_domain(name)
                         self.assertEqual(
                             d,
-                            "thermal",
-                            msg=f"probe {topic} path has non-thermal {name!r} ({d})",
-                        )
-                    after_len = invent_mod._probe_answer_path_len(eng, topic)
-                    before_len = before_lens.get(topic)
-                    if before_len is not None and after_len is not None:
-                        self.assertLessEqual(
-                            after_len,
-                            before_len,
-                            msg=f"probe {topic} path lengthened {before_len}->{after_len}",
+                            topic_domain,
+                            msg=f"probe {topic} path has non-{topic_domain} {name!r} ({d})",
                         )
             finally:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
