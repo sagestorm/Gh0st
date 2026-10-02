@@ -404,25 +404,52 @@ def reset_logs_for_tests() -> None:
         pass
 
 
-def snapshot_logs() -> dict[str, list[dict[str, Any]]]:
-    """Copy accept/reject/error ledgers (for nested harnesses that must restore)."""
-    return {
+def snapshot_logs() -> dict[str, Any]:
+    """Copy accept/reject/error ledgers and search pending queues.
+
+    Nested harnesses (e.g. product scoreboard inside verify) must restore both
+    so ambient pending goals are not lost when reset_logs_for_tests clears them.
+    """
+    snap: dict[str, Any] = {
         "accepts": [dict(a) for a in _ACCEPT_LOG],
         "rejects": [dict(r) for r in _REJECT_LOG],
         "errors": [dict(e) for e in _ERROR_LOG],
     }
+    try:
+        from . import search_substrate as ss
+
+        snap["pending"] = ss.snapshot_pending()
+    except Exception:  # noqa: BLE001
+        snap["pending"] = {
+            "invent": [],
+            "reflect": [],
+            "goals": [],
+            "form": [],
+        }
+    return snap
 
 
-def restore_logs(snap: dict[str, list[dict[str, Any]]] | None) -> None:
-    """Replace ledgers with a prior snapshot (or clear when snap is None)."""
+def restore_logs(snap: dict[str, Any] | None) -> None:
+    """Replace ledgers + pending queues with a prior snapshot (clear if None)."""
     _ACCEPT_LOG.clear()
     _REJECT_LOG.clear()
     _ERROR_LOG.clear()
-    if not snap:
-        return
-    _ACCEPT_LOG.extend(dict(a) for a in snap.get("accepts") or [])
-    _REJECT_LOG.extend(dict(r) for r in snap.get("rejects") or [])
-    _ERROR_LOG.extend(dict(e) for e in snap.get("errors") or [])
+    pending: dict[str, list[dict[str, Any]]] | None = None
+    if snap:
+        _ACCEPT_LOG.extend(dict(a) for a in snap.get("accepts") or [])
+        _REJECT_LOG.extend(dict(r) for r in snap.get("rejects") or [])
+        _ERROR_LOG.extend(dict(e) for e in snap.get("errors") or [])
+        raw_pending = snap.get("pending")
+        if isinstance(raw_pending, dict):
+            pending = raw_pending
+        else:
+            pending = None
+    try:
+        from . import search_substrate as ss
+
+        ss.restore_pending(pending if snap else None)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def all_axes_have_non_stdlib_accepts() -> bool:
