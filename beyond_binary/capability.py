@@ -1,8 +1,9 @@
 """Mutable capability programs — forms interpret evolved op lists.
 
-Body specialty is not a pole-name template function body. Each body persists a
-capability program (JSON ops). The form runs an interpreter over that program.
-Programs can gain ops from structural pressure (evolve_program).
+Body specialty is not a pole-name template. Each body persists a CapProgram
+(JSON ops + macros). Experience can *synthesize* new opcodes as microprograms
+(data definitions over a primitive ISA), not only select from a hand-authored
+handler table.
 """
 
 from __future__ import annotations
@@ -18,7 +19,11 @@ from .model import Hemisphere
 from . import store
 
 
-# Seed opcodes — registry can grow at runtime via register_opcode.
+# Primitive ISA — small fixed base. New opcodes are macros over these.
+_PRIMITIVE_OPS: dict[str, Callable[..., Any]] = {}
+# Synthesized opcodes: name → microprogram body (list of primitive steps).
+_MACRO_DEFS: dict[str, list[dict[str, Any]]] = {}
+# Unified dispatch (primitives + installed macros).
 _OPCODE_IMPLS: dict[str, Callable[..., Any]] = {}
 
 
@@ -30,12 +35,23 @@ def known_opcodes() -> set[str]:
     return set(_OPCODE_IMPLS)
 
 
+def known_macros() -> dict[str, list[dict[str, Any]]]:
+    return dict(_MACRO_DEFS)
+
+
+def _register_primitive(name: str, fn: Callable[..., Any]) -> None:
+    _PRIMITIVE_OPS[name] = fn
+    register_opcode(name, fn)
+
+
 @dataclass
 class CapProgram:
     body_name: str
     ops: list[dict[str, Any]] = field(default_factory=list)
     program_id: str = field(default_factory=lambda: f"cap-{uuid.uuid4().hex[:8]}")
     revisions: int = 0
+    # Per-program synthesized opcode definitions (persisted with the body).
+    macros: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +59,7 @@ class CapProgram:
             "body_name": self.body_name,
             "ops": list(self.ops),
             "revisions": self.revisions,
+            "macros": {k: list(v) for k, v in self.macros.items()},
         }
 
     @classmethod
@@ -52,6 +69,10 @@ class CapProgram:
             ops=list(data.get("ops") or []),
             program_id=str(data.get("program_id") or f"cap-{uuid.uuid4().hex[:8]}"),
             revisions=int(data.get("revisions", 0) or 0),
+            macros={
+                str(k): list(v)
+                for k, v in (data.get("macros") or {}).items()
+            },
         )
 
 
@@ -64,7 +85,11 @@ def load_program(body_store: Path | str | None) -> CapProgram:
     path = capability_path(body_store)
     if not path.exists():
         return CapProgram(body_name=store.store_path(body_store).stem)
-    return CapProgram.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    program = CapProgram.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    # Reinstall macros into the runtime registry after load.
+    for name, body in program.macros.items():
+        install_macro(name, body)
+    return program
 
 
 def save_program(program: CapProgram, body_store: Path | str | None) -> Path:
@@ -138,9 +163,44 @@ def _op_diff(ctx: dict[str, Any], args: dict[str, Any]) -> None:
     scalars[into] = float(scalars.get(a, 0)) - float(scalars.get(b, 0))
 
 
+def _op_ratio(ctx: dict[str, Any], args: dict[str, Any]) -> None:
+    a = str(args.get("a", "n_children_cause"))
+    b = str(args.get("b", "node_count"))
+    into = str(args.get("into", "ratio"))
+    scalars = ctx.setdefault("scalars", {})
+    denom = float(scalars.get(b, 0))
+    scalars[into] = float(scalars.get(a, 0)) / denom if denom else 0.0
+
+
 def _op_count_nodes(ctx: dict[str, Any], args: dict[str, Any]) -> None:
     eng: Engine = ctx["eng"]
     ctx.setdefault("scalars", {})["node_count"] = len(eng.torus.nodes)
+
+
+def _op_count_attr(ctx: dict[str, Any], args: dict[str, Any]) -> None:
+    """Generic counter — attr selects which structural set to size."""
+    eng: Engine = ctx["eng"]
+    attr = str(args.get("attr", "nodes"))
+    into = str(args.get("into", f"count_{attr}"))
+    if attr == "orphans":
+        n = len(eng.orphans())
+    elif attr == "leaves":
+        n = sum(1 for node in eng.torus.nodes.values() if not eng.children(node.name))
+    elif attr == "cause_nodes":
+        n = sum(
+            1
+            for node in eng.torus.nodes.values()
+            if node.hemisphere is Hemisphere.CAUSE
+        )
+    elif attr == "effect_nodes":
+        n = sum(
+            1
+            for node in eng.torus.nodes.values()
+            if node.hemisphere is Hemisphere.EFFECT
+        )
+    else:
+        n = len(eng.torus.nodes)
+    ctx.setdefault("scalars", {})[into] = n
 
 
 def _op_emit(ctx: dict[str, Any], args: dict[str, Any]) -> None:
@@ -156,13 +216,54 @@ def _op_emit(ctx: dict[str, Any], args: dict[str, Any]) -> None:
             out[f] = ctx["measures"][f]
 
 
-# Register seed opcodes.
-register_opcode("measure_children", _op_measure_children)
-register_opcode("measure_depth", _op_measure_depth)
-register_opcode("dual_answer", _op_dual_answer)
-register_opcode("diff", _op_diff)
-register_opcode("count_nodes", _op_count_nodes)
-register_opcode("emit", _op_emit)
+# Register primitive ISA.
+_register_primitive("measure_children", _op_measure_children)
+_register_primitive("measure_depth", _op_measure_depth)
+_register_primitive("dual_answer", _op_dual_answer)
+_register_primitive("diff", _op_diff)
+_register_primitive("ratio", _op_ratio)
+_register_primitive("count_nodes", _op_count_nodes)
+_register_primitive("count_attr", _op_count_attr)
+_register_primitive("emit", _op_emit)
+
+
+def _run_steps(ctx: dict[str, Any], steps: list[dict[str, Any]]) -> None:
+    for step in steps:
+        op = str(step.get("op", ""))
+        # Prefer primitive for macro bodies to avoid accidental recursion.
+        impl = _PRIMITIVE_OPS.get(op) or _OPCODE_IMPLS.get(op)
+        if impl is None:
+            continue
+        impl(ctx, step)
+
+
+def install_macro(name: str, body: list[dict[str, Any]]) -> None:
+    """Install a synthesized opcode whose semantics are a microprogram (data)."""
+    _MACRO_DEFS[name] = list(body)
+
+    def _macro_impl(ctx: dict[str, Any], args: dict[str, Any]) -> None:
+        _run_steps(ctx, _MACRO_DEFS[name])
+
+    register_opcode(name, _macro_impl)
+
+
+def synthesize_opcode(
+    program: CapProgram,
+    name: str,
+    body: list[dict[str, Any]],
+) -> bool:
+    """Define a new opcode from experience as a macro; return True if new/changed."""
+    # Only primitive ops allowed inside macro bodies (closed meta-ISA, open macros).
+    for step in body:
+        op = str(step.get("op", ""))
+        if op not in _PRIMITIVE_OPS:
+            return False
+    prev = program.macros.get(name)
+    if prev == body and name in _OPCODE_IMPLS:
+        return False
+    program.macros[name] = list(body)
+    install_macro(name, body)
+    return True
 
 
 def initial_program_for(eng: Engine, body_name: str) -> CapProgram:
@@ -173,7 +274,6 @@ def initial_program_for(eng: Engine, body_name: str) -> CapProgram:
         {"op": "measure_children", "pole": "cause"},
         {"op": "measure_children", "pole": "effect"},
     ]
-    # Structural pressure chooses extra ops (data-driven, not pole-name template).
     if cause and _child_count_safe(eng, cause) != _child_count_safe(eng, effect):
         ops.append(
             {
@@ -191,7 +291,13 @@ def initial_program_for(eng: Engine, body_name: str) -> CapProgram:
     ops.append(
         {
             "op": "emit",
-            "fields": ["node_count", "gradient", "n_children_cause", "n_children_effect", "dual"],
+            "fields": [
+                "node_count",
+                "gradient",
+                "n_children_cause",
+                "n_children_effect",
+                "dual",
+            ],
         }
     )
     return CapProgram(body_name=body_name, ops=ops, revisions=0)
@@ -210,72 +316,122 @@ def _depth_safe(eng: Engine, name: str) -> int:
         return 0
 
 
+def _insert_before_emit(program: CapProgram, step: dict[str, Any]) -> None:
+    emit_i = next(
+        (i for i, o in enumerate(program.ops) if o.get("op") == "emit"),
+        len(program.ops),
+    )
+    program.ops.insert(emit_i, step)
+
+
+def _ensure_emit_field(program: CapProgram, field: str) -> None:
+    for o in program.ops:
+        if o.get("op") == "emit":
+            fields = list(o.get("fields") or [])
+            if field not in fields:
+                fields.append(field)
+                o["fields"] = fields
+
+
 def evolve_program(program: CapProgram, eng: Engine) -> CapProgram:
-    """Append ops when structure suggests new measurements — grows per body."""
+    """Synthesize new opcodes as macros from structural pressure — experience growth."""
+    # Reinstall any persisted macros.
+    for name, body in program.macros.items():
+        install_macro(name, body)
+
     op_names = {o.get("op") for o in program.ops}
     changed = False
-    # If orphans appear, register + use a new opcode dynamically.
+
     orphans = [n.name for n in eng.orphans()]
-    if orphans and "count_orphans" not in op_names:
-        if "count_orphans" not in _OPCODE_IMPLS:
+    if orphans and "syn_orphan_pressure" not in op_names:
+        # Synthesize: count orphans via generic count_attr — no hand-written handler.
+        body = [
+            {"op": "count_attr", "attr": "orphans", "into": "orphan_count"},
+        ]
+        if synthesize_opcode(program, "syn_orphan_pressure", body):
+            _insert_before_emit(program, {"op": "syn_orphan_pressure"})
+            _ensure_emit_field(program, "orphan_count")
+            program.revisions += 1
+            changed = True
 
-            def _count_orphans(ctx: dict[str, Any], args: dict[str, Any]) -> None:
-                e: Engine = ctx["eng"]
-                ctx.setdefault("scalars", {})["orphan_count"] = len(e.orphans())
+    deep = any(_depth_safe(eng, n.name) >= 3 for n in eng.torus.nodes.values())
+    if deep and "syn_leaf_load" not in op_names:
+        body = [
+            {"op": "count_attr", "attr": "leaves", "into": "leaf_count"},
+            {"op": "count_nodes"},
+            {
+                "op": "ratio",
+                "a": "leaf_count",
+                "b": "node_count",
+                "into": "leaf_ratio",
+            },
+        ]
+        if synthesize_opcode(program, "syn_leaf_load", body):
+            _insert_before_emit(program, {"op": "syn_leaf_load"})
+            _ensure_emit_field(program, "leaf_count")
+            _ensure_emit_field(program, "leaf_ratio")
+            program.revisions += 1
+            changed = True
 
-            register_opcode("count_orphans", _count_orphans)
-        # Insert before emit.
-        emit_i = next(
-            (i for i, o in enumerate(program.ops) if o.get("op") == "emit"),
-            len(program.ops),
-        )
-        program.ops.insert(emit_i, {"op": "count_orphans"})
-        # Ensure emit includes the new field.
-        for o in program.ops:
-            if o.get("op") == "emit":
-                fields = list(o.get("fields") or [])
-                if "orphan_count" not in fields:
-                    fields.append("orphan_count")
-                    o["fields"] = fields
-        program.revisions += 1
-        changed = True
-    # Deep graphs gain leaf-count op.
+    # Asymmetry macro when poles diverge.
+    cause, effect = _roots(eng)
     if (
-        any(_depth_safe(eng, n.name) >= 3 for n in eng.torus.nodes.values())
-        and "count_leaves" not in op_names
+        cause
+        and effect
+        and _child_count_safe(eng, cause) != _child_count_safe(eng, effect)
+        and "syn_pole_asymmetry" not in op_names
     ):
-        if "count_leaves" not in _OPCODE_IMPLS:
+        body = [
+            {"op": "measure_children", "pole": "cause"},
+            {"op": "measure_children", "pole": "effect"},
+            {
+                "op": "diff",
+                "a": "n_children_cause",
+                "b": "n_children_effect",
+                "into": "pole_asymmetry",
+            },
+            {"op": "count_nodes"},
+            {
+                "op": "ratio",
+                "a": "pole_asymmetry",
+                "b": "node_count",
+                "into": "asymmetry_ratio",
+            },
+        ]
+        if synthesize_opcode(program, "syn_pole_asymmetry", body):
+            _insert_before_emit(program, {"op": "syn_pole_asymmetry"})
+            _ensure_emit_field(program, "pole_asymmetry")
+            _ensure_emit_field(program, "asymmetry_ratio")
+            program.revisions += 1
+            changed = True
 
-            def _count_leaves(ctx: dict[str, Any], args: dict[str, Any]) -> None:
-                e: Engine = ctx["eng"]
-                leaves = [
-                    n.name
-                    for n in e.torus.nodes.values()
-                    if not e.children(n.name)
-                ]
-                ctx.setdefault("scalars", {})["leaf_count"] = len(leaves)
+    # Hemisphere balance — synthesizable on any dual graph (experience baseline).
+    if len(eng.torus.nodes) >= 2 and "syn_hemisphere_balance" not in op_names:
+        body = [
+            {"op": "count_attr", "attr": "cause_nodes", "into": "cause_count"},
+            {"op": "count_attr", "attr": "effect_nodes", "into": "effect_count"},
+            {
+                "op": "diff",
+                "a": "cause_count",
+                "b": "effect_count",
+                "into": "hemisphere_delta",
+            },
+        ]
+        if synthesize_opcode(program, "syn_hemisphere_balance", body):
+            _insert_before_emit(program, {"op": "syn_hemisphere_balance"})
+            _ensure_emit_field(program, "hemisphere_delta")
+            _ensure_emit_field(program, "cause_count")
+            _ensure_emit_field(program, "effect_count")
+            program.revisions += 1
+            changed = True
 
-            register_opcode("count_leaves", _count_leaves)
-        emit_i = next(
-            (i for i, o in enumerate(program.ops) if o.get("op") == "emit"),
-            len(program.ops),
-        )
-        program.ops.insert(emit_i, {"op": "count_leaves"})
-        for o in program.ops:
-            if o.get("op") == "emit":
-                fields = list(o.get("fields") or [])
-                if "leaf_count" not in fields:
-                    fields.append("leaf_count")
-                    o["fields"] = fields
-        program.revisions += 1
-        changed = True
-    if changed:
-        return program
     return program
 
 
 def interpret(program: CapProgram, eng: Engine) -> dict[str, Any]:
-    """Run the body's capability program."""
+    """Run the body's capability program (primitives + synthesized macros)."""
+    for name, body in program.macros.items():
+        install_macro(name, body)
     cause, effect = _roots(eng)
     ctx: dict[str, Any] = {
         "eng": eng,
@@ -296,6 +452,7 @@ def interpret(program: CapProgram, eng: Engine) -> dict[str, Any]:
         "body": program.body_name,
         "revisions": program.revisions,
         "ops": [o.get("op") for o in program.ops],
+        "macros": sorted(program.macros.keys()),
         "cause_pole": cause,
         "effect_pole": effect,
         "result": ctx.get("emit") or {},

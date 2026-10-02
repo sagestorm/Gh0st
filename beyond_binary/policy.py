@@ -1,8 +1,9 @@
-"""Extensible metacognition — conditions/actions grow beyond a seed DSL.
+"""Experience-grown metacognition — expr kinds over empirical journal signals.
 
-Seed enums bootstrap the system. Experience can register **new condition kinds**
-(compound signal predicates) and **new action kinds** (parameterized biases).
-Strategy cites policy_id, active rules, and whether novel kinds were used.
+Seed enums bootstrap. Experience discovers signal keys from journal rows and
+learns linear expression conditions (weighted sums vs threshold) — not only
+compound/threshold over a fixed seed vocabulary. Actions can bias any channel
+discovered from outcomes.
 """
 
 from __future__ import annotations
@@ -38,6 +39,16 @@ SEED_ACTIONS = (
 # Compat aliases for older imports/tests.
 CONDITIONS = SEED_CONDITIONS
 ACTIONS = SEED_ACTIONS
+
+# Preference channels strategy knows how to steer.
+PREFERENCE_CHANNELS = (
+    "prefer_prune",
+    "prefer_grow",
+    "prefer_migrate",
+    "prefer_invent",
+    "prefer_nurture",
+    "suppress_grow",
+)
 
 
 @dataclass
@@ -97,6 +108,8 @@ class MetaPolicy:
     condition_kinds: dict[str, dict[str, Any]] = field(default_factory=dict)
     action_kinds: dict[str, dict[str, Any]] = field(default_factory=dict)
     kind_revisions: int = 0
+    # Empirical signal keys observed across journal history.
+    observed_signals: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +125,7 @@ class MetaPolicy:
             "rules": [r.to_dict() for r in self.rules],
             "condition_kinds": self.condition_kinds,
             "action_kinds": self.action_kinds,
+            "observed_signals": list(self.observed_signals),
         }
 
     @classmethod
@@ -135,6 +149,7 @@ class MetaPolicy:
             condition_kinds=dict(data.get("condition_kinds") or {}),
             action_kinds=dict(data.get("action_kinds") or {}),
             kind_revisions=int(data.get("kind_revisions", 0) or 0),
+            observed_signals=list(data.get("observed_signals") or []),
         )
 
     def known_conditions(self) -> set[str]:
@@ -167,8 +182,8 @@ def save_policy(policy: MetaPolicy, mind_store: Path | str | None = None) -> Pat
 
 
 def _signal_vector(entries: list[JournalEntry]) -> dict[str, float]:
-    """Numeric signals derived from journal — basis for novel conditions."""
-    vec = {
+    """Numeric signals from journal — includes ANY empirical keys in entry.signals."""
+    vec: dict[str, float] = {
         "flags": 0.0,
         "grow_count": 0.0,
         "node_delta": 0.0,
@@ -176,21 +191,27 @@ def _signal_vector(entries: list[JournalEntry]) -> dict[str, float]:
         "fruitful": 0.0,
         "stalled": 0.0,
         "hungry": 0.0,
+        "migrate_kept": 0.0,
     }
     for entry in entries:
         sig = entry.signals or {}
-        vec["flags"] += float(sig.get("flags", 0) or 0)
-        vec["grow_count"] += float(sig.get("grow_count", 0) or 0)
-        vec["node_delta"] += float(sig.get("node_delta", 0) or 0)
-        vec["prune_count"] += float(sig.get("prune_count", 0) or 0)
+        for key, raw in sig.items():
+            try:
+                vec[str(key)] = float(vec.get(str(key), 0.0)) + float(raw or 0)
+            except (TypeError, ValueError):
+                continue
         if entry.reflection == "growth_fruitful":
-            vec["fruitful"] += 1
+            vec["fruitful"] = float(vec.get("fruitful", 0.0)) + 1.0
         if entry.reflection == "growth_stalled":
-            vec["stalled"] += 1
+            vec["stalled"] = float(vec.get("stalled", 0.0)) + 1.0
         if entry.reflection == "structure_hungry":
-            vec["hungry"] += 1
+            vec["hungry"] = float(vec.get("hungry", 0.0)) + 1.0
         if entry.reflection == "challenge_pressure":
-            vec["flags"] += 1
+            vec["flags"] = float(vec.get("flags", 0.0)) + 1.0
+        if entry.strategy_hint == "invent":
+            vec["hint_invent"] = float(vec.get("hint_invent", 0.0)) + 1.0
+        if entry.strategy_hint == "nurture":
+            vec["hint_nurture"] = float(vec.get("hint_nurture", 0.0)) + 1.0
     return vec
 
 
@@ -226,6 +247,12 @@ def register_condition_kind(
     if name not in policy.condition_kinds:
         policy.condition_kinds[name] = definition
         policy.kind_revisions += 1
+    else:
+        # Allow redefinition of expr weights from newer experience.
+        prev = policy.condition_kinds[name]
+        if prev != definition and definition.get("kind") == "expr":
+            policy.condition_kinds[name] = definition
+            policy.kind_revisions += 1
     return name
 
 
@@ -244,6 +271,26 @@ def register_action_kind(
     return name
 
 
+def _eval_expr(spec: dict[str, Any], vec: dict[str, float]) -> bool:
+    weights = spec.get("weights") or {}
+    threshold = float(spec.get("threshold", 0.0))
+    total = 0.0
+    for key, w in weights.items():
+        total += float(w) * float(vec.get(str(key), 0.0))
+    op = str(spec.get("op", ">="))
+    if op == ">=":
+        return total >= threshold
+    if op == ">":
+        return total > threshold
+    if op == "<=":
+        return total <= threshold
+    if op == "<":
+        return total < threshold
+    if op == "==":
+        return abs(total - threshold) < 1e-9
+    return False
+
+
 def _eval_condition(
     name: str,
     policy: MetaPolicy,
@@ -256,6 +303,8 @@ def _eval_condition(
     if not spec:
         return False
     kind = spec.get("kind")
+    if kind == "expr":
+        return _eval_expr(spec, vec)
     if kind == "all":
         return all(
             _eval_condition(c, policy, seed_counts, vec) for c in spec.get("of", [])
@@ -284,14 +333,102 @@ def revise_kinds_from_outcomes(
     policy: MetaPolicy,
     entries: list[JournalEntry],
 ) -> MetaPolicy:
-    """Invent new condition/action kinds from co-occurring signals."""
+    """Invent expr kinds from empirical journal signals — not seed compounds alone."""
     if len(entries) < 2:
         return policy
     seed_counts = _signals_from_entries(entries)
     vec = _signal_vector(entries)
-    active_seeds = sorted(k for k, v in seed_counts.items() if v >= 1)
 
-    # Compound condition when two seed conditions co-occur.
+    # Track empirical keys observed (experience vocabulary growth).
+    for key in sorted(vec.keys()):
+        if key not in policy.observed_signals:
+            policy.observed_signals.append(key)
+
+    # --- Experience-grown expr condition ---
+    # Correlate fruitful vs stalled with signal magnitudes; invent weights.
+    fruitful = float(vec.get("fruitful", 0.0))
+    stalled = float(vec.get("stalled", 0.0))
+    flags = float(vec.get("flags", 0.0))
+    node_delta = float(vec.get("node_delta", 0.0))
+    grow_count = float(vec.get("grow_count", 0.0))
+    # Features are empirical — any observed numeric signal can enter.
+    feature_keys = [
+        k
+        for k in vec.keys()
+        if k
+        not in {
+            "fruitful",
+            "stalled",
+            "hungry",
+            "hint_invent",
+            "hint_nurture",
+        }
+        and abs(float(vec.get(k, 0.0))) > 0
+    ]
+    if feature_keys and (fruitful >= 1 or node_delta >= 2):
+        weights: dict[str, float] = {}
+        # Positive association with growth outcomes.
+        if node_delta > 0:
+            weights["node_delta"] = 0.5 + min(2.0, node_delta / 4.0)
+        if grow_count > 0:
+            weights["grow_count"] = 0.35 + min(1.5, grow_count / 6.0)
+        if flags > 0:
+            weights["flags"] = -0.8  # pressure suppresses invent bias
+        # Include other empirical keys with small learned weights from magnitude.
+        for k in feature_keys:
+            if k in weights:
+                continue
+            mag = float(vec.get(k, 0.0))
+            if mag == 0:
+                continue
+            # Outcome tilt: fruitful → positive; stalled → negative.
+            tilt = (fruitful - stalled) / max(1.0, fruitful + stalled)
+            weights[k] = round(0.1 * tilt * (1.0 if mag > 0 else -1.0), 4)
+        if weights:
+            # Threshold from mean weighted sum * 0.4 so it can fire.
+            approx = sum(
+                float(w) * float(vec.get(k, 0.0)) for k, w in weights.items()
+            )
+            threshold = round(max(0.5, approx * 0.35), 4)
+            cname = "cond_expr_growth"
+            register_condition_kind(
+                policy,
+                name=cname,
+                definition={
+                    "kind": "expr",
+                    "weights": weights,
+                    "op": ">=",
+                    "threshold": threshold,
+                    "origin": "learned-expr",
+                    "features": sorted(weights.keys()),
+                },
+            )
+            aname = "act_bias_invent_expr"
+            register_action_kind(
+                policy,
+                name=aname,
+                definition={
+                    "kind": "bias",
+                    "channel": "prefer_invent",
+                    "amount": 1.4,
+                    "origin": "learned-expr",
+                },
+            )
+            existing = {(r.when, r.then) for r in policy.rules if r.enabled}
+            if (cname, aname) not in existing:
+                policy.rules.append(
+                    MetaRule(
+                        f"r-expr-{uuid.uuid4().hex[:4]}",
+                        cname,
+                        aname,
+                        strength=1.3,
+                        origin="learned",
+                    )
+                )
+                policy.rule_revisions += 1
+
+    # Keep prior compound/threshold learning as secondary (compat).
+    active_seeds = sorted(k for k, v in seed_counts.items() if v >= 1)
     if len(active_seeds) >= 2:
         a, b = active_seeds[0], active_seeds[1]
         cname = f"cond_{a[:6]}_{b[:6]}"
@@ -300,7 +437,6 @@ def revise_kinds_from_outcomes(
             name=cname,
             definition={"kind": "all", "of": [a, b], "origin": "learned"},
         )
-        # Rule using the novel condition → parameterized invent bias action.
         aname = f"act_boost_invent_{a[:4]}"
         register_action_kind(
             policy,
@@ -325,7 +461,6 @@ def revise_kinds_from_outcomes(
             )
             policy.rule_revisions += 1
 
-    # Threshold condition on raw node_delta — not in seed enum.
     if vec.get("node_delta", 0) >= 2:
         tname = "cond_node_delta_ge_2"
         register_condition_kind(
@@ -384,7 +519,6 @@ def revise_rules_from_outcomes(
     def _learn(when: str, then: str, strength: float) -> None:
         nonlocal policy
         if when not in policy.known_conditions() or then not in policy.known_actions():
-            # Only seed-pair learn here; novel kinds handled separately.
             if when not in SEED_CONDITIONS or then not in SEED_ACTIONS:
                 return
         if (when, then) in existing:
@@ -507,14 +641,19 @@ def _apply_action(
     if not spec:
         return
     kind = spec.get("kind")
-    if kind == "boost":
+    if kind == "bias":
+        channel = str(spec.get("channel", "prefer_invent"))
+        amount = float(spec.get("amount", 1.0)) * strength
+        if channel not in scores:
+            scores[channel] = 0.0
+        scores[channel] += amount
+    elif kind == "boost":
         target = str(spec.get("target", "invent"))
         amount = float(spec.get("amount", 1.0)) * strength
         key = f"prefer_{target}" if not target.startswith("prefer_") else target
         if key not in scores:
             scores[key] = 0.0
         scores[key] += amount
-        # Also bump invent weight channel for want_* flags.
         if "invent" in target:
             scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + amount
     elif kind == "set_grow_budget":
@@ -527,7 +666,7 @@ def strategy_from_policy(
     max_new_pairs: int = 1,
     journal_entries: list[JournalEntry] | list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Derive strategy from rules over seed + learned kinds."""
+    """Derive strategy from rules over seed + learned kinds (incl. expr)."""
     normalized: list[JournalEntry] = []
     for row in journal_entries or []:
         if isinstance(row, JournalEntry):
@@ -540,17 +679,11 @@ def strategy_from_policy(
     if not normalized:
         seed_counts = {"structure_hungry": 1}
 
-    scores = {
-        "prefer_prune": 0.0,
-        "prefer_grow": 0.0,
-        "prefer_migrate": 0.0,
-        "prefer_invent": 0.0,
-        "prefer_nurture": 0.0,
-        "suppress_grow": 0.0,
-    }
+    scores = {ch: 0.0 for ch in PREFERENCE_CHANNELS}
     extras: dict[str, Any] = {}
     fired: list[str] = []
     novel_kind_fired = False
+    expr_kind_fired = False
 
     for rule in policy.rules:
         if not rule.enabled:
@@ -559,6 +692,11 @@ def strategy_from_policy(
             continue
         if rule.when in policy.condition_kinds or rule.then in policy.action_kinds:
             novel_kind_fired = True
+            spec = policy.condition_kinds.get(rule.when) or {}
+            if spec.get("kind") == "expr" or (
+                policy.action_kinds.get(rule.then) or {}
+            ).get("origin") == "learned-expr":
+                expr_kind_fired = True
         _apply_action(rule.then, policy, scores, rule.strength, extras)
         fired.append(rule.rule_id)
 
@@ -581,10 +719,17 @@ def strategy_from_policy(
         "rule_revisions": policy.rule_revisions,
         "kind_revisions": policy.kind_revisions,
         "novel_kinds": novel_kind_fired,
+        "expr_kinds": expr_kind_fired,
         "condition_kind_count": len(policy.condition_kinds),
         "action_kind_count": len(policy.action_kinds),
+        "observed_signals": list(policy.observed_signals),
     }
-    tag = "kinds" if novel_kind_fired else "rules"
+    if expr_kind_fired:
+        tag = "expr"
+    elif novel_kind_fired:
+        tag = "kinds"
+    else:
+        tag = "rules"
 
     if dominant == "prefer_prune" or suppress:
         return {

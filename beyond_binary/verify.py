@@ -348,20 +348,24 @@ def run_verification() -> dict[str, Any]:
         concept_inv = mind.invent_domain(peng, prim_path, cycle=pcenter._cycle_index)
         inv_p = concept_inv.get("invention") or {}
         why_p = str(inv_p.get("why", ""))
+        cause_p = str(inv_p.get("cause", ""))
+        effect_p = str(inv_p.get("effect", ""))
         concept_ok = (
             bool(concept_inv.get("invented"))
             and inv_p.get("source") == "concept"
-            and normalize_absent(inv_p.get("cause"), alphabet_before)
-            and normalize_absent(inv_p.get("effect"), alphabet_before)
-            and why_p.startswith("concept:open-partition:")
-            and not concepts_mod.is_suffix_primitive_label(str(inv_p.get("cause", "")))
-            and not concepts_mod.is_suffix_primitive_label(str(inv_p.get("effect", "")))
-            and not concepts_mod.is_role_axis_label(str(inv_p.get("cause", "")))
-            and not concepts_mod.is_role_axis_label(str(inv_p.get("effect", "")))
+            and normalize_absent(cause_p, alphabet_before)
+            and normalize_absent(effect_p, alphabet_before)
+            and why_p.startswith("concept:motif:")
+            and not concepts_mod.is_suffix_primitive_label(cause_p)
+            and not concepts_mod.is_suffix_primitive_label(effect_p)
+            and not concepts_mod.is_role_axis_label(cause_p)
+            and not concepts_mod.is_role_axis_label(effect_p)
+            and not concepts_mod.is_syllabic_mint_label(cause_p)
+            and not concepts_mod.is_syllabic_mint_label(effect_p)
         )
         gate(
             "C4e",
-            "Open partition concept mint (not role-axis / suffix primitives)",
+            "Motif-digest concept formation (not syllabic/role/suffix mint)",
             concept_ok,
             str(inv_p or concept_inv.get("reason")),
         )
@@ -379,6 +383,16 @@ def run_verification() -> dict[str, Any]:
         learned_rules = [r for r in pol.rules if r.origin == "learned" and r.enabled]
         novel_conds = set(pol.condition_kinds) - set(policy_mod.SEED_CONDITIONS)
         novel_acts = set(pol.action_kinds) - set(policy_mod.SEED_ACTIONS)
+        expr_conds = [
+            k
+            for k, v in pol.condition_kinds.items()
+            if isinstance(v, dict) and v.get("kind") == "expr"
+        ]
+        bias_acts = [
+            k
+            for k, v in pol.action_kinds.items()
+            if isinstance(v, dict) and v.get("kind") == "bias"
+        ]
         reason = str(pc.strategy.reason)
         pol_ok = (
             policy_mod.policy_path(pol_path).exists()
@@ -386,20 +400,25 @@ def run_verification() -> dict[str, Any]:
             and pol.rule_revisions >= 1
             and pol.kind_revisions >= 1
             and len(learned_rules) >= 1
-            and len(novel_conds) >= 1
-            and len(novel_acts) >= 1
+            and len(expr_conds) >= 1
+            and len(bias_acts) >= 1
+            and len(pol.observed_signals) >= 1
             and pc.strategy.from_policy
-            and (":rules:" in reason or ":kinds:" in reason)
+            and (
+                ":expr:" in reason
+                or ":kinds:" in reason
+                or ":rules:" in reason
+            )
         )
         gate(
             "C3p",
-            "Metacognition invents new condition/action kinds from experience",
+            "Metacognition learns expr kinds over empirical journal signals",
             pol_ok,
             (
                 f"updates={pol.updates} revisions={pol.rule_revisions} "
                 f"kind_revisions={pol.kind_revisions} "
-                f"novel_conds={sorted(novel_conds)[:3]} "
-                f"novel_acts={sorted(novel_acts)[:3]} "
+                f"expr_conds={expr_conds[:2]} bias_acts={bias_acts[:2]} "
+                f"observed={pol.observed_signals[:6]} "
                 f"learned={len(learned_rules)} reason={reason}"
             ),
         )
@@ -483,6 +502,14 @@ def run_verification() -> dict[str, Any]:
             entry = str(caps[0] if caps else "")
             # Reject legacy pulse_<cause>_to_<effect> template specialty names.
             template_like = entry.startswith("pulse_") and "_to_" in entry
+            syn_macros = [
+                k for k in prog.macros if str(k).startswith("syn_")
+            ]
+            syn_ops = [
+                o.get("op")
+                for o in prog.ops
+                if str(o.get("op", "")).startswith("syn_")
+            ]
             form_ok = (
                 bool(caps)
                 and entry == "interpret_program"
@@ -499,19 +526,21 @@ def run_verification() -> dict[str, Any]:
                 and Path(frec.capability_path).exists()
                 and len(prog.ops) >= 2
                 and prog.program_id != prog2.program_id
+                and len(syn_macros) >= 1
+                and len(syn_ops) >= 1
                 and not template_like
             )
             form_ev = (
                 f"entry={caps[0]} program={prog.program_id} "
-                f"ops={result.get('ops')} revisions={prog.revisions} "
-                f"other_program={prog2.program_id} "
+                f"ops={result.get('ops')} macros={sorted(prog.macros)} "
+                f"revisions={prog.revisions} other_program={prog2.program_id} "
                 f"result_keys={sorted((result.get('result') or {}).keys())}"
             )
         except Exception as exc:  # noqa: BLE001
             form_ev = str(exc)
         gate(
             "C4f",
-            "Forms run interpreted capability programs (not pole-templates)",
+            "Forms synthesize CapProgram opcodes as macros from experience",
             form_ok,
             form_ev,
         )
@@ -544,12 +573,13 @@ def run_verification() -> dict[str, Any]:
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Open-partition concept mint, kind-revising policy, and CapProgram "
-            "forms are stronger scaffolds — still bounded generators/schemas "
-            "(syllabic alphabet, seed+threshold/compound kinds, opcode registry). "
-            "Missing vs sentience-evidence-bar.md: unconstrained concept formation "
-            "beyond mint alphabets, metacognition beyond registered kind schemas, "
-            "forms whose ops are not drawn from a closed opcode set."
+            "Motif-digest concepts, expr kinds over journal signals, and "
+            "synthesized CapProgram macros are stronger scaffolds — still bound "
+            "by dual-motif discovery, linear expr evaluators, and a primitive ISA "
+            "that macros compose. Missing vs sentience-evidence-bar.md: concept "
+            "shapes beyond dual-motif digests, metacognition beyond expr/bias "
+            "evaluators, forms that invent op semantics outside the primitive ISA; "
+            "§3 self-directed goals still act-menu bounded."
         ),
     }
     gates.append(sentience)

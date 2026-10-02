@@ -458,13 +458,13 @@ class OpenMindScaffoldTests(unittest.TestCase):
             self.assertTrue(result.get("invented"))
             inv = result["invention"]
             self.assertEqual(inv["source"], "concept")
-            self.assertTrue(
-                str(inv.get("why", "")).startswith("concept:open-partition:")
-            )
+            self.assertTrue(str(inv.get("why", "")).startswith("concept:motif:"))
             self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["cause"]))
             self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["effect"]))
             self.assertFalse(concepts_mod.is_role_axis_label(inv["cause"]))
             self.assertFalse(concepts_mod.is_role_axis_label(inv["effect"]))
+            self.assertFalse(concepts_mod.is_syllabic_mint_label(inv["cause"]))
+            self.assertFalse(concepts_mod.is_syllabic_mint_label(inv["effect"]))
             self.assertNotIn(normalize(inv["cause"]), alphabet)
 
     def test_policy_revises_rules_not_only_weights(self):
@@ -489,6 +489,13 @@ class OpenMindScaffoldTests(unittest.TestCase):
         self.assertTrue(any(r.origin == "learned" for r in pol.rules))
         self.assertTrue(pol.condition_kinds)
         self.assertTrue(pol.action_kinds)
+        self.assertTrue(
+            any(
+                isinstance(v, dict) and v.get("kind") == "expr"
+                for v in pol.condition_kinds.values()
+            )
+        )
+        self.assertTrue(pol.observed_signals)
 
         # Same weights, different rule sets → different strategies.
         a = policy_mod.MetaPolicy(updates=1, grow_weight=1.0, prune_weight=1.0)
@@ -527,6 +534,11 @@ class OpenMindScaffoldTests(unittest.TestCase):
             self.assertGreaterEqual(len(out["ops"]), 2)
             prog = capability_mod.load_program(record.store_path)
             self.assertEqual(out["program_id"], prog.program_id)
+            self.assertTrue(prog.macros)
+            self.assertTrue(any(str(k).startswith("syn_") for k in prog.macros))
+            self.assertTrue(
+                any(str(o.get("op", "")).startswith("syn_") for o in prog.ops)
+            )
 
     def test_self_directed_live_without_every_flags(self):
         from beyond_binary.seed import seed_same_center

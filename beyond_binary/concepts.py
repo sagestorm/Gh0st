@@ -1,8 +1,8 @@
-"""Open concept formation from graph partitions — no fixed role-axis name table.
+"""Experience-grown concept formation — motif digests, not syllabic alphabets.
 
-Concepts are opposite-state domains whose labels are minted from topology
-partitions (degree / depth splits) via an open syllabic generator. Names are
-not looked up from ROLE_AXES and are not pressure-stem suffixes.
+Concepts are opposite-state domains whose labels are structural digests of
+discovered dual motifs (adjacency asymmetries). Naming does not use ROLE_AXES,
+pressure-suffix morphs, or a fixed onset/vowel/coda mint alphabet.
 """
 
 from __future__ import annotations
@@ -16,18 +16,12 @@ from .engine import Engine, is_bit_collapse_topic, normalize
 from .model import Hemisphere
 
 
-# Open syllabic atoms — generator alphabet, not concept labels.
-_ONSETS = "bdfghklmnprstwyz"
-_VOWELS = "aeiou"
-_CODAS = "knlrsxz"
-
-
 @dataclass(frozen=True)
 class ConceptProposal:
     cause: str
     effect: str
     instance: str
-    role: str  # partition tag for provenance (not a name-table key)
+    role: str  # motif tag for provenance
     why: str
     metrics: dict[str, float]
 
@@ -43,27 +37,18 @@ class ConceptProposal:
         }
 
 
-def _digest(parts: list[str]) -> str:
+def _digest_hex(parts: list[str], *, nbytes: int = 4) -> str:
     raw = "|".join(parts).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(raw).hexdigest()[: nbytes * 2]
 
 
-def mint_token(seed: str, *, syllables: int = 2) -> str:
-    """Mint a pronounceable token from a seed digest — not a fixed label table."""
-    h = _digest([seed])
-    chars: list[str] = []
-    # Walk hex pairs into onset-vowel-coda syllables.
-    i = 0
-    for _ in range(max(1, syllables)):
-        o = _ONSETS[int(h[i % len(h)], 16) % len(_ONSETS)]
-        v = _VOWELS[int(h[(i + 1) % len(h)], 16) % len(_VOWELS)]
-        c = _CODAS[int(h[(i + 2) % len(h)], 16) % len(_CODAS)]
-        chars.extend([o, v, c])
-        i += 3
-    token = "".join(chars)
-    # Ensure token isn't accidentally a bit-collapse word.
+def motif_label(prefix: str, motif_parts: list[str]) -> str:
+    """Label from structural digest — hex of adjacency signature, not syllabic mint."""
+    digest = _digest_hex(motif_parts, nbytes=4)
+    # Prefix keeps cause/effect distinguishable; digest is graph-derived.
+    token = f"{prefix}{digest}"
     if is_bit_collapse_topic(token):
-        token = f"x{token}"
+        token = f"m{token}"
     return token
 
 
@@ -78,46 +63,65 @@ def _depth(eng: Engine, name: str) -> int:
         return 0
 
 
-def partition_cause_nodes(eng: Engine) -> dict[str, list[str]]:
-    """Partition cause-side nodes by structural features (no name table)."""
-    causes = [
-        n
-        for n in eng.torus.nodes.values()
-        if n.hemisphere is Hemisphere.CAUSE
-    ]
-    if not causes:
-        return {}
-    degrees = [(n.name, _child_count(eng, n.name)) for n in causes]
-    depths = [(n.name, _depth(eng, n.name)) for n in causes]
-    deg_vals = sorted(d for _, d in degrees)
-    mid_deg = deg_vals[len(deg_vals) // 2]
-    depth_vals = sorted(d for _, d in depths)
-    mid_depth = depth_vals[len(depth_vals) // 2]
-    high_deg = sorted(n for n, d in degrees if d >= mid_deg)
-    low_deg = sorted(n for n, d in degrees if d < mid_deg)
-    deep = sorted(n for n, d in depths if d >= mid_depth)
-    shallow = sorted(n for n, d in depths if d < mid_depth)
-    return {
-        "degree_high_vs_low": high_deg,
-        "degree_low": low_deg,
-        "depth_deep": deep,
-        "depth_shallow": shallow,
-    }
+def discover_dual_motifs(eng: Engine) -> list[dict[str, Any]]:
+    """Discover dual motifs from live topology — open shape, not a fixed pair table.
+
+    A motif is an opposite-linked pair whose child-count or depth asymmetry
+    is non-zero. Motifs are ordered by asymmetry magnitude (experience order).
+    """
+    motifs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for node in eng.torus.nodes.values():
+        if node.hemisphere is not Hemisphere.CAUSE:
+            continue
+        if not node.opposite or node.opposite not in eng.torus.nodes:
+            continue
+        opp = eng.torus.nodes[node.opposite]
+        key = "|".join(sorted([normalize(node.name), normalize(opp.name)]))
+        if key in seen:
+            continue
+        seen.add(key)
+        c_kids = sorted(normalize(c.name) for c in eng.children(node.name))
+        e_kids = sorted(normalize(c.name) for c in eng.children(opp.name))
+        c_depth = _depth(eng, node.name)
+        e_depth = _depth(eng, opp.name)
+        deg_asym = abs(len(c_kids) - len(e_kids))
+        depth_asym = abs(c_depth - e_depth)
+        if deg_asym == 0 and depth_asym == 0 and not c_kids and not e_kids:
+            continue
+        # Motif signature: poles + child sets + depths (adjacency digest inputs).
+        signature = [
+            f"c:{normalize(node.name)}",
+            f"e:{normalize(opp.name)}",
+            f"ck:{','.join(c_kids)}",
+            f"ek:{','.join(e_kids)}",
+            f"cd:{c_depth}",
+            f"ed:{e_depth}",
+        ]
+        motifs.append(
+            {
+                "cause_pole": node.name,
+                "effect_pole": opp.name,
+                "cause_children": c_kids,
+                "effect_children": e_kids,
+                "deg_asym": deg_asym,
+                "depth_asym": depth_asym,
+                "score": float(deg_asym * 2 + depth_asym),
+                "signature": signature,
+            }
+        )
+    motifs.sort(key=lambda m: (-m["score"], m["cause_pole"], m["effect_pole"]))
+    return motifs
 
 
 def graph_partition_metrics(eng: Engine) -> dict[str, float]:
-    parts = partition_cause_nodes(eng)
+    motifs = discover_dual_motifs(eng)
     n = max(1, len(eng.torus.nodes))
+    total_asym = sum(m["score"] for m in motifs)
     return {
         "nodes": float(len(eng.torus.nodes)),
-        "degree_split": float(
-            abs(len(parts.get("degree_high_vs_low", [])) - len(parts.get("degree_low", [])))
-        )
-        / n,
-        "depth_split": float(
-            abs(len(parts.get("depth_deep", [])) - len(parts.get("depth_shallow", [])))
-        )
-        / n,
+        "motif_count": float(len(motifs)),
+        "motif_asymmetry": total_asym / n,
     }
 
 
@@ -128,29 +132,23 @@ def form_concepts(
     used_instances: set[str],
     limit: int = 3,
 ) -> list[ConceptProposal]:
-    """Propose concepts by minting labels from topology partitions."""
+    """Propose concepts by digesting discovered dual motifs (not a mint alphabet)."""
     if len(eng.torus.nodes) < 4:
         return []
-    parts = partition_cause_nodes(eng)
+    motifs = discover_dual_motifs(eng)
+    if not motifs:
+        return []
     metrics = graph_partition_metrics(eng)
     out: list[ConceptProposal] = []
 
-    # Each complementary partition pair → one opposite-state concept.
-    pairs = [
-        ("degree_high_vs_low", "degree_low", "partition:degree"),
-        ("depth_deep", "depth_shallow", "partition:depth"),
-    ]
-    for left_key, right_key, tag in pairs:
-        left = parts.get(left_key) or []
-        right = parts.get(right_key) or []
-        if not left or not right:
-            continue
-        # Seed tokens from member sets — open mint, not ROLE_AXES lookup.
-        cause = mint_token("c:" + ",".join(left), syllables=2)
-        effect = mint_token("e:" + ",".join(right), syllables=2)
+    for motif in motifs:
+        sig = list(motif["signature"])
+        # Distinct prefixes so cause/effect digests diverge even on similar sets.
+        cause = motif_label("c", ["L"] + sig)
+        effect = motif_label("e", ["R"] + sig)
         if normalize(cause) == normalize(effect):
-            effect = mint_token("e2:" + ",".join(right) + cause, syllables=2)
-        # Collision avoidance against closed alphabet.
+            effect = motif_label("e", ["R2"] + sig + [cause])
+        # Collision: re-digest with salt from alphabet pressure (still structural).
         salt = 0
         while (
             normalize(cause) in alphabet
@@ -159,8 +157,8 @@ def form_concepts(
             or is_bit_collapse_topic(effect)
         ) and salt < 8:
             salt += 1
-            cause = mint_token(f"c{salt}:" + ",".join(left), syllables=2 + salt % 2)
-            effect = mint_token(f"e{salt}:" + ",".join(right), syllables=2 + salt % 2)
+            cause = motif_label("c", [f"L{salt}"] + sig)
+            effect = motif_label("e", [f"R{salt}"] + sig)
         if normalize(cause) in alphabet or normalize(effect) in alphabet:
             continue
         if normalize(cause) == normalize(effect):
@@ -168,17 +166,20 @@ def form_concepts(
         instance = f"{normalize(cause)}-{normalize(effect)}"
         if normalize(instance) in used_instances or normalize(instance) in alphabet:
             continue
-        # Reject legacy suffix-primitive lookalikes.
         if is_suffix_primitive_label(cause) or is_suffix_primitive_label(effect):
             continue
-        # Reject legacy role-axis table labels (fecund/sparse/…).
         if is_role_axis_label(cause) or is_role_axis_label(effect):
             continue
+        if is_syllabic_mint_label(cause) or is_syllabic_mint_label(effect):
+            continue
+        tag = (
+            f"motif:deg={motif['deg_asym']},depth={motif['depth_asym']},"
+            f"pole={normalize(motif['cause_pole'])}"
+        )
         why = (
-            f"concept:open-partition:{tag}:"
-            f"left={len(left)},right={len(right)},"
-            f"degree_split={metrics['degree_split']:.2f},"
-            f"depth_split={metrics['depth_split']:.2f}"
+            f"concept:motif:{tag}:"
+            f"score={motif['score']:.1f},"
+            f"motif_asymmetry={metrics['motif_asymmetry']:.2f}"
         )
         out.append(
             ConceptProposal(
@@ -220,6 +221,16 @@ def is_role_axis_label(label: str) -> bool:
         "balanced",
         "skewed",
     }
+
+
+def is_syllabic_mint_label(label: str) -> bool:
+    """Detect slice-6 open-partition syllabic tokens (onset-vowel-coda repeats)."""
+    key = normalize(label)
+    # Reject pure syllabic 6-letter tokens without hex (legacy mint).
+    if re.fullmatch(r"[bdfghklmnprstwyz][aeiou][knlrsxz]{1,2}"
+                    r"([bdfghklmnprstwyz][aeiou][knlrsxz]{1,2})+", key):
+        return True
+    return False
 
 
 # Backward-compatible alias used by older verify imports.
