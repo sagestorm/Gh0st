@@ -1723,13 +1723,14 @@ class DomainCoherentInventTests(unittest.TestCase):
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6)
         self.assertTrue(invent_mod.search_has_product_exceed_candidate(eng))
+        # Undomain structural dual stays meet-only (#12 motifs now earn coverage).
         edit = {
             "kind": "edit_ast",
             "ast": [
                 {
                     "op": "add_dual",
-                    "cause": "latent",
-                    "effect": "manifest",
+                    "cause": "open",
+                    "effect": "closed",
                     "cause_parent": "nothing",
                     "effect_parent": "something",
                 }
@@ -1756,21 +1757,22 @@ class DomainCoherentInventTests(unittest.TestCase):
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6)
-        # Consume every remaining product-exceed candidate (rehang + coverage).
-        for _ in range(12):
+        # Consume every remaining product-exceed candidate (rehang + motif coverage).
+        for _ in range(20):
             if not invent_mod.search_has_product_exceed_candidate(eng):
                 break
             rows = search_mod.search_invent_asts(eng, limit=1)
             self.assertTrue(rows)
             self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
         self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
+        # Undomain structural dual: path-neutral meet after typed motif exceeds are gone.
         edit = {
             "kind": "edit_ast",
             "ast": [
                 {
                     "op": "add_dual",
-                    "cause": "latent",
-                    "effect": "manifest",
+                    "cause": "open",
+                    "effect": "closed",
                     "cause_parent": "nothing",
                     "effect_parent": "something",
                 }
@@ -1916,6 +1918,29 @@ class DomainCoherentInventTests(unittest.TestCase):
         self.assertIn("void", probes)
         self.assertIn("water", probes)
         self.assertTrue(set(probes) - set(invent_mod.PRODUCT_PROBES))
+
+    def test_product_probes_for_includes_present_invent_motifs(self):
+        """#12: answerable invent-motif poles join the live product probe set."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import search_substrate as search_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6)
+        self.assertNotIn("humid", invent_mod.product_probes_for(eng))
+        ast = [
+            {
+                "op": "add_dual",
+                "cause": "humid",
+                "effect": "arid",
+                "cause_parent": "hot",
+                "effect_parent": "cold",
+            }
+        ]
+        self.assertTrue(search_mod.apply_edit_ast(eng, ast))
+        probes = invent_mod.product_probes_for(eng)
+        self.assertIn("humid", probes)
+        self.assertIn("arid", probes)
 
     def test_mint_under_typed_parent_skips_undomain(self):
         from beyond_binary.seed import seed_same_center
@@ -2187,7 +2212,7 @@ class ProductiveInventTests(unittest.TestCase):
                 )
 
     def test_scoreboard_follow_on_invent_only_when_exceed_remains(self):
-        """#11: follow-on invent_domain is gated on search_has_product_exceed_candidate."""
+        """#11/#12: follow-on invent_domain gated on search_has_product_exceed_candidate."""
         from beyond_binary import product_scoreboard as sb
         from beyond_binary import invent as invent_mod
         import os
@@ -2198,11 +2223,18 @@ class ProductiveInventTests(unittest.TestCase):
         from beyond_binary import substrate as substrate_mod
 
         report = sb.run_scoreboard()
-        # Live tip after invent-on-think rehang empties the exceed pool —
-        # follow_on stays false (honest single-invent exceed).
+        # #12: invent-motif coverage remains after invent-on-think → follow-on accumulates.
         self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
         if report["search"].get("invent_applied") and report.get("product_exceed"):
-            if not report.get("follow_on_invent"):
+            if report.get("follow_on_invent"):
+                self.assertGreaterEqual(int(report.get("invent_count") or 0), 2)
+                self.assertGreaterEqual(
+                    len(report["search"].get("invent_instances") or []), 2
+                )
+                self.assertFalse(report.get("meet_only_invent"))
+            else:
+                # Honest when a second exceed truly does not remain.
                 self.assertEqual(int(report.get("invent_count") or 0), 1)
                 self.assertFalse(report["search"].get("follow_on_invent"))
         # Gate mirrors scoreboard mind_store think + invent-on-think / invent path.
@@ -2223,8 +2255,59 @@ class ProductiveInventTests(unittest.TestCase):
             finally:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
                 substrate_mod.reset_logs_for_tests()
-            # After productive invent-on-think on full probe set, exceed pool empty.
-            self.assertFalse(has_exceed)
+            # #12: motif usable-coverage exceed remains after invent-on-think rehang.
+            self.assertTrue(has_exceed)
+
+    def test_motif_add_dual_exceeds_after_invent_on_think(self):
+        """#12: typed invent-motif dual earns usable_probe_coverage after invent-on-think."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary import store
+        from beyond_binary import substrate as substrate_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind = Path(tmp) / "mind.json"
+            eng = Engine(
+                seed_same_center(("thermal", "ontology", "optical"), minimal=True)
+            )
+            store.save(eng.torus, mind)
+            os.environ[substrate_mod.ENV_FLAG] = "search"
+            try:
+                substrate_mod.reset_logs_for_tests()
+                center = LivingCenter(eng)
+                center.mind_store = mind
+                center.think(6)
+                self.assertTrue(center.primary_inventions)
+                before_probes = invent_mod.product_probes_for(eng)
+                self.assertNotIn("humid", before_probes)
+                edit = {
+                    "kind": "edit_ast",
+                    "ast": [
+                        {
+                            "op": "add_dual",
+                            "cause": "humid",
+                            "effect": "arid",
+                            "cause_parent": "hot",
+                            "effect_parent": "cold",
+                        }
+                    ],
+                }
+                ok, pre, post, reason = invent_mod._trial_search_edit(eng, edit)
+                self.assertTrue(ok, msg=reason)
+                trial = search_mod._clone_engine(eng)
+                self.assertTrue(search_mod.apply_edit_ast(trial, edit["ast"]))
+                exceeds = invent_mod.product_exceed_reasons(eng, trial, pre, post)
+                self.assertIn("usable_probe_coverage", exceeds)
+                after_probes = invent_mod.product_probes_for(trial)
+                self.assertGreater(len(after_probes), len(before_probes))
+                self.assertIn("humid", after_probes)
+            finally:
+                os.environ.pop(substrate_mod.ENV_FLAG, None)
+                substrate_mod.reset_logs_for_tests()
 
     def test_verify_default_fail_closed(self):
         import os

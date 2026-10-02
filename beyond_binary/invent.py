@@ -906,32 +906,45 @@ PRODUCT_PROBES: tuple[str, ...] = (
 
 
 def product_probes_for(eng: Engine) -> tuple[str, ...]:
-    """#8: present lexicon cascade cause/effect poles that exist + are answerable.
+    """#8/#12: present answerable cascade + invent-motif poles.
 
     Fixed PRODUCT_PROBES let invent lengthen unlisted cascade children (e.g. empty).
     Trial + scoreboard use this live set; falls back to PRODUCT_PROBES if empty.
+
+    #12: domain invent motifs (humid/arid, latent/manifest, …) count once present
+    and answerable so invent search can still earn usable_probe_coverage after
+    invent-on-think fills the fixed cascade (follow-on / multi-invent accumulate).
     """
     from . import lexicon as lex
     from .engine import RuleError
 
     out: list[str] = []
     seen: set[str] = set()
+
+    def _take(pole: str) -> None:
+        key = normalize(pole)
+        if key in seen:
+            return
+        if not eng.exists(pole):
+            return
+        try:
+            dual = eng.answer(pole)
+        except RuleError:
+            return
+        if not (dual.cause_paths and dual.effect_paths):
+            return
+        seen.add(key)
+        node = eng.torus.nodes.get(pole) or eng.torus.nodes.get(key)
+        out.append(node.name if node is not None else pole)
+
     for entry in lex.all_cascades():
-        for pole in (entry.cause, entry.effect):
-            key = normalize(pole)
-            if key in seen:
-                continue
-            if not eng.exists(pole):
-                continue
-            try:
-                dual = eng.answer(pole)
-            except RuleError:
-                continue
-            if not (dual.cause_paths and dual.effect_paths):
-                continue
-            seen.add(key)
-            node = eng.torus.nodes.get(pole) or eng.torus.nodes.get(key)
-            out.append(node.name if node is not None else pole)
+        _take(entry.cause)
+        _take(entry.effect)
+    # #12: typed invent motifs remain productive coverage targets after cascade fill.
+    for pairs in lex.DOMAIN_INVENT_MOTIFS.values():
+        for cause, effect in pairs:
+            _take(cause)
+            _take(effect)
     return tuple(out) if out else PRODUCT_PROBES
 
 
@@ -1014,12 +1027,12 @@ def product_exceed_reasons(
     pre: Any,
     post: Any,
 ) -> list[str]:
-    """#9: ways invent strictly exceeds pre-invent product metrics.
+    """#9/#12: ways invent strictly exceeds pre-invent product metrics.
 
     Exceeds (any one is enough):
     - shorter path on a present cascade probe, or lower probe_path_len_total
     - StructuralScore.better_than (coverage / symmetry / unused cost / leaner)
-    - more answerable cascade probes (usable coverage) without lengthening paths
+    - more answerable cascade/motif probes (usable coverage) without lengthening paths
     """
     reasons: list[str] = []
     if post is not None and pre is not None and post.better_than(pre):

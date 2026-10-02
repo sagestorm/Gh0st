@@ -421,7 +421,8 @@ def run_scoreboard(
                 "or undomain poles must not appear on typed probe answer paths; "
                 "probe path lengths must not exceed Null; search arm exercises "
                 "invent-on-think (optional follow-on invent_domain while exceed "
-                "remains) and reports cumulative product_exceed vs meet_only_invent"
+                "remains, including invent-motif usable coverage after cascade fill) "
+                "and reports cumulative product_exceed vs meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "
