@@ -228,7 +228,7 @@ def cmd_product_scoreboard(args: argparse.Namespace) -> int:
     """Null-vs-search product honesty adjunct (does not redefine SENTIENCE)."""
     from . import product_scoreboard as scoreboard_mod
 
-    probes = tuple(args.probe) if args.probe else scoreboard_mod.DEFAULT_PROBES
+    probes = tuple(args.probe) if args.probe else None
     result = scoreboard_mod.run_scoreboard(
         think_steps=args.steps,
         probes=probes,

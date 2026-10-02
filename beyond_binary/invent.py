@@ -890,6 +890,7 @@ def search_edit_score_acceptable(before, after) -> bool:
     )
 
 
+# Fallback when live torus has no answerable cascade poles yet.
 PRODUCT_PROBES: tuple[str, ...] = (
     "water",
     "boiling",
@@ -898,7 +899,36 @@ PRODUCT_PROBES: tuple[str, ...] = (
     "absence",
     "bright",
 )
-_PROBE_TOPICS: tuple[str, ...] = PRODUCT_PROBES
+
+
+def product_probes_for(eng: Engine) -> tuple[str, ...]:
+    """#8: present lexicon cascade cause/effect poles that exist + are answerable.
+
+    Fixed PRODUCT_PROBES let invent lengthen unlisted cascade children (e.g. empty).
+    Trial + scoreboard use this live set; falls back to PRODUCT_PROBES if empty.
+    """
+    from . import lexicon as lex
+    from .engine import RuleError
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in lex.all_cascades():
+        for pole in (entry.cause, entry.effect):
+            key = normalize(pole)
+            if key in seen:
+                continue
+            if not eng.exists(pole):
+                continue
+            try:
+                dual = eng.answer(pole)
+            except RuleError:
+                continue
+            if not (dual.cause_paths and dual.effect_paths):
+                continue
+            seen.add(key)
+            node = eng.torus.nodes.get(pole) or eng.torus.nodes.get(key)
+            out.append(node.name if node is not None else pole)
+    return tuple(out) if out else PRODUCT_PROBES
 
 
 def _flatten_dual_path_names(dual: Any) -> list[str]:
@@ -934,16 +964,16 @@ def _probe_answer_path_len(eng: Engine, topic: str) -> int | None:
 
 
 def _typed_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
-    """#5/#7: typed probe paths must stay domain-coherent.
+    """#5/#7/#8: typed probe paths must stay domain-coherent.
 
-    For each probe with a lexicon/inherited domain D, answer-path poles must
-    all carry D (no undomain motifs, no foreign typed domains).
+    For each live cascade probe with a lexicon/inherited domain D, answer-path
+    poles must all carry D (no undomain motifs, no foreign typed domains).
     """
     from . import lexicon as lex
     from . import search_substrate as search_mod
     from .engine import RuleError, normalize as norm
 
-    for topic in _PROBE_TOPICS:
+    for topic in product_probes_for(before_eng):
         if not before_eng.exists(topic) or not after_eng.exists(topic):
             continue
         try:
@@ -961,8 +991,8 @@ def _typed_probe_domain_ok(before_eng: Engine, after_eng: Engine) -> bool:
 
 
 def _probe_path_economy_ok(before_eng: Engine, after_eng: Engine) -> bool:
-    """#6/#7: refuse invent that lengthens any measured product probe path."""
-    for topic in _PROBE_TOPICS:
+    """#6/#7/#8: refuse invent that lengthens any present cascade probe path."""
+    for topic in product_probes_for(before_eng):
         before_len = _probe_answer_path_len(before_eng, topic)
         after_len = _probe_answer_path_len(after_eng, topic)
         if before_len is None:
