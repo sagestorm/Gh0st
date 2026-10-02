@@ -392,6 +392,9 @@ def search_invent_asts(
     Cause/effect poles are human-readable duals (lexicon aliases, cascade
     unused poles, invent motifs). Digests may appear only in instance ids.
     Proposals with sw/sc digest poles are never emitted.
+
+    #9: prefer candidates that earn ≥1 product exceed (path shorten, structural
+    improve, or usable probe coverage) over meet-only path-neutral leaves.
     """
     used = {normalize(x) for x in (used_instances or ())}
     reserved: set[str] = set()
@@ -400,12 +403,17 @@ def search_invent_asts(
         for n in eng.torus.nodes.values()
         if n.hemisphere is Hemisphere.CAUSE and n.opposite
     ]
-    out: list[dict[str, Any]] = []
+    productive: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
+    # Soft caps: never let non-productive rehangs starve root add_dual fallback.
+    productive_cap = max(limit * 2, 6)
+    other_cap = max(limit * 4, 12)
 
-    # #6/#7/#8: prefer path-neutral invent (root leaf add_dual / off-cascade)
-    # over wedges that lengthen any present cascade probe path.
+    # #6/#7/#8: skip on-spine wedges that lengthen present cascade probes.
     from . import invent as invent_mod
+    from .center import LivingCenter
 
+    pre_score = LivingCenter(eng).score()
     probe_spine: set[str] = set()
     for topic in invent_mod.product_probes_for(eng):
         if not eng.exists(topic):
@@ -424,11 +432,83 @@ def search_invent_asts(
             else:
                 probe_spine.add(normalize(str(p)))
 
-    # --- Root leaf add_dual (path-neutral): new dual under a root pair ---
+    def _classify(row: dict[str, Any], trial_eng: Engine) -> None:
+        used.add(normalize(row["instance"]))
+        post_score = LivingCenter(trial_eng).score()
+        if invent_mod.product_exceed_reasons(eng, trial_eng, pre_score, post_score):
+            if len(productive) < productive_cap:
+                productive.append(row)
+        elif len(other) < other_cap:
+            other.append(row)
+
+    # --- Productive rehangs first (#9): only emit when they exceed ---
+    for node in causes:
+        if len(productive) >= productive_cap:
+            break
+        if not node.parent:
+            continue
+        opp = eng.torus.nodes.get(node.opposite)
+        if opp is None:
+            continue
+        if looks_like_digest_pole(node.name) or looks_like_digest_pole(opp.name):
+            continue
+        for host in causes:
+            if len(productive) >= productive_cap:
+                break
+            if not host.opposite or normalize(host.name) == normalize(node.name):
+                continue
+            if host.parent is None and node.parent and normalize(host.name) == normalize(
+                node.parent
+            ):
+                continue
+            if _is_ancestor(eng, node.name, host.name):
+                continue
+            hopp = eng.torus.nodes[host.opposite]
+            if normalize(host.name) == normalize(node.parent or ""):
+                continue
+            lab = _digest("rehang", normalize(node.name), normalize(host.name))
+            instance = f"rehang-{lab}"
+            if normalize(instance) in used:
+                continue
+            ast = [
+                {
+                    "op": "rehang",
+                    "cause": node.name,
+                    "effect": opp.name,
+                    "cause_parent": host.name,
+                    "effect_parent": hopp.name,
+                }
+            ]
+            if rejects_digest_poles(ast):
+                continue
+            trial = _clone_engine(eng)
+            if not apply_edit_ast(trial, ast):
+                continue
+            post_score = LivingCenter(trial).score()
+            if not invent_mod.product_exceed_reasons(eng, trial, pre_score, post_score):
+                continue
+            productive.append(
+                {
+                    "kind": "edit_ast",
+                    "ast": ast,
+                    "cause": node.name,
+                    "effect": opp.name,
+                    "instance": instance,
+                    "why": (
+                        f"search:rehang:node={normalize(node.name)},"
+                        f"under={normalize(host.name)}"
+                    ),
+                }
+            )
+            used.add(normalize(instance))
+
+    # --- Root leaf add_dual: coverage exceed when possible; else meet fallback ---
     root_causes = [
         n for n in causes if n.parent is None and n.opposite in eng.torus.nodes
     ]
     for parent in sorted(root_causes, key=lambda n: normalize(n.name)):
+        if len(productive) + len(other) >= productive_cap + other_cap:
+            break
         opp = eng.torus.nodes[parent.opposite]
         parent_domain = node_domain(eng, parent.name)
         salt = f"root-leaf|{normalize(parent.name)}"
@@ -459,7 +539,7 @@ def search_invent_asts(
             continue
         trial = _clone_engine(eng)
         if apply_edit_ast(trial, ast):
-            out.append(
+            _classify(
                 {
                     "kind": "edit_ast",
                     "ast": ast,
@@ -467,13 +547,11 @@ def search_invent_asts(
                     "effect": effect,
                     "instance": instance,
                     "why": f"search:add_dual:under={normalize(parent.name)}/{normalize(opp.name)}",
-                }
+                },
+                trial,
             )
-            used.add(normalize(instance))
             reserved.add(normalize(cause))
             reserved.add(normalize(effect))
-            if len(out) >= limit:
-                return out
         else:
             reserved.add(normalize(cause))
             reserved.add(normalize(effect))
@@ -495,6 +573,8 @@ def search_invent_asts(
     # --- Wedge search: insert dual between parent→child ---
     # #8: skip on-spine wedges — they lengthen present cascade probes.
     for _spine_rank, parent, node in wedge_sites:
+        if len(other) >= other_cap and len(productive) >= productive_cap:
+            break
         if _spine_rank:
             continue
         parent_domain = node_domain(eng, parent.name)
@@ -503,8 +583,6 @@ def search_invent_asts(
             eng, reserved=reserved, salt=salt, require_domain=parent_domain
         )
         if pair is None:
-            # Typed sites with no matching dual left: skip site (don't fall
-            # back to undomain motifs). Untyped sites may exhaust the pool.
             continue
         cause, effect = pair
         dig = _digest("wedge", normalize(node.name), normalize(parent.name), cause, effect)
@@ -528,7 +606,7 @@ def search_invent_asts(
             continue
         trial = _clone_engine(eng)
         if apply_edit_ast(trial, ast):
-            out.append(
+            _classify(
                 {
                     "kind": "edit_ast",
                     "ast": ast,
@@ -536,13 +614,11 @@ def search_invent_asts(
                     "effect": effect,
                     "instance": instance,
                     "why": f"search:wedge:under={normalize(parent.name)}/{normalize(node.name)}",
-                }
+                },
+                trial,
             )
-            used.add(normalize(instance))
             reserved.add(normalize(cause))
             reserved.add(normalize(effect))
-            if len(out) >= limit:
-                return out
         else:
             reserved.add(normalize(cause))
             reserved.add(normalize(effect))
@@ -550,7 +626,11 @@ def search_invent_asts(
     # --- Chain search: add_dual then nested add_dual (2-step AST) ---
     dual_pairs = [(c.name, eng.torus.nodes[c.opposite].name) for c in causes[:8]]
     for i, (c1, e1) in enumerate(dual_pairs):
+        if len(other) >= other_cap and len(productive) >= productive_cap:
+            break
         for c2, e2 in dual_pairs[i + 1 : i + 4]:
+            if len(other) >= other_cap and len(productive) >= productive_cap:
+                break
             if normalize(c1) == normalize(c2):
                 continue
             parent_domain = node_domain(eng, c1)
@@ -560,12 +640,11 @@ def search_invent_asts(
             )
             if mid is None:
                 if parent_domain is None:
-                    return out
+                    break
                 continue
             mid_c, mid_e = mid
             reserved_mid = set(reserved) | {normalize(mid_c), normalize(mid_e)}
             salt_leaf = f"chain-leaf|{normalize(c1)}|{normalize(c2)}|{mid_c}"
-            # Leaf nests under mid; mid is domain-matched to parent when typed.
             leaf = mint_readable_dual(
                 eng,
                 reserved=reserved_mid,
@@ -619,7 +698,7 @@ def search_invent_asts(
                 continue
             trial = _clone_engine(eng)
             if apply_edit_ast(trial, ast):
-                out.append(
+                _classify(
                     {
                         "kind": "edit_ast",
                         "ast": ast,
@@ -627,76 +706,21 @@ def search_invent_asts(
                         "effect": leaf_e,
                         "instance": instance,
                         "why": why,
-                    }
+                    },
+                    trial,
                 )
-                used.add(normalize(instance))
                 reserved.add(normalize(mid_c))
                 reserved.add(normalize(mid_e))
                 reserved.add(normalize(leaf_c))
                 reserved.add(normalize(leaf_e))
-                if len(out) >= limit:
-                    return out
             else:
                 reserved.add(normalize(mid_c))
                 reserved.add(normalize(mid_e))
                 reserved.add(normalize(leaf_c))
                 reserved.add(normalize(leaf_e))
 
-    # --- Rehang search: re-attach non-root dual under independently chosen parents ---
-    for node in causes:
-        if not node.parent:
-            continue
-        opp = eng.torus.nodes.get(node.opposite)
-        if opp is None:
-            continue
-        if looks_like_digest_pole(node.name) or looks_like_digest_pole(opp.name):
-            continue
-        for host in causes:
-            if not host.opposite or normalize(host.name) == normalize(node.name):
-                continue
-            if host.parent is None and node.parent and normalize(host.name) == normalize(node.parent):
-                continue
-            # Refuse rehang onto a descendant — creates parent cycles.
-            if _is_ancestor(eng, node.name, host.name):
-                continue
-            hopp = eng.torus.nodes[host.opposite]
-            if normalize(host.name) == normalize(node.parent or ""):
-                continue
-            lab = _digest("rehang", normalize(node.name), normalize(host.name))
-            instance = f"rehang-{lab}"
-            if normalize(instance) in used:
-                continue
-            ast = [
-                {
-                    "op": "rehang",
-                    "cause": node.name,
-                    "effect": opp.name,
-                    "cause_parent": host.name,
-                    "effect_parent": hopp.name,
-                }
-            ]
-            if rejects_digest_poles(ast):
-                continue
-            trial = _clone_engine(eng)
-            if apply_edit_ast(trial, ast):
-                out.append(
-                    {
-                        "kind": "edit_ast",
-                        "ast": ast,
-                        "cause": node.name,
-                        "effect": opp.name,
-                        "instance": instance,
-                        "why": (
-                            f"search:rehang:node={normalize(node.name)},"
-                            f"under={normalize(host.name)}"
-                        ),
-                    }
-                )
-                used.add(normalize(instance))
-                if len(out) >= limit:
-                    return out
-
-    return out
+    # #9: productive exceeds first; path-neutral meet fallback after.
+    return (productive + other)[:limit]
 
 
 # ---- Reflect: expression-tree ASTs over journal signals ----

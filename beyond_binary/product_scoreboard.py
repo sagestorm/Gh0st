@@ -251,6 +251,45 @@ def evaluate_meet_or_exceed(
     return (not regressions), regressions
 
 
+def evaluate_product_exceed(
+    null_arm: dict[str, Any],
+    search_arm: dict[str, Any],
+    *,
+    probes: tuple[str, ...],
+) -> tuple[bool, list[str]]:
+    """#9: detect strict product exceeds of search vs Null (meet-only ≠ exceed)."""
+    exceeds: list[str] = []
+    n_score = _score_from_dict(null_arm["score"])
+    s_score = _score_from_dict(search_arm["score"])
+    if s_score.better_than(n_score):
+        exceeds.append("structural_score")
+    if int(search_arm.get("probe_path_len_total") or 0) < int(
+        null_arm.get("probe_path_len_total") or 0
+    ):
+        exceeds.append("probe_path_len_total")
+    n_probes = null_arm.get("probes") or {}
+    s_probes = search_arm.get("probes") or {}
+    for topic in probes:
+        n_len = (n_probes.get(topic) or {}).get("path_len")
+        s_len = (s_probes.get(topic) or {}).get("path_len")
+        if n_len is not None and s_len is not None and int(s_len) < int(n_len):
+            exceeds.append(f"probe_path_shorter:{topic}")
+        n_ans = bool((n_probes.get(topic) or {}).get("answerable"))
+        s_ans = bool((s_probes.get(topic) or {}).get("answerable"))
+        if s_ans and not n_ans:
+            exceeds.append(f"usable_probe_coverage:{topic}")
+    # Broader usable coverage: search answers more of the shared probe set.
+    n_ans_count = sum(
+        1 for t in probes if (n_probes.get(t) or {}).get("answerable")
+    )
+    s_ans_count = sum(
+        1 for t in probes if (s_probes.get(t) or {}).get("answerable")
+    )
+    if s_ans_count > n_ans_count:
+        exceeds.append("usable_probe_coverage")
+    return bool(exceeds), exceeds
+
+
 def run_scoreboard(
     *,
     domains: tuple[str, ...] = DEFAULT_DOMAINS,
@@ -288,12 +327,20 @@ def run_scoreboard(
         ok, regressions = evaluate_meet_or_exceed(
             null_arm, search_arm, probes=shared_probes
         )
+        product_exceed, exceeds = evaluate_product_exceed(
+            null_arm, search_arm, probes=shared_probes
+        )
+        # #9: distinguish meet-only invent vs product exceed (detection, not veto).
+        meet_only_invent = bool(search_arm.get("invent_applied")) and not product_exceed
         # Drop bulky name lists from default report (kept for debugging via flag).
         null_public = {k: v for k, v in null_arm.items() if k != "node_names"}
         search_public = {k: v for k, v in search_arm.items() if k != "node_names"}
         return {
             "ok": ok,
             "meet_or_exceed": ok,
+            "product_exceed": product_exceed,
+            "exceeds": exceeds,
+            "meet_only_invent": meet_only_invent,
             "regressions": regressions,
             "probes": list(shared_probes),
             "domains": list(domains),
@@ -305,7 +352,8 @@ def run_scoreboard(
                 "unused_path_cost, readable_name_ratio; answer-path digests must "
                 "be zero; probe answerability must not regress; typed cross-domain "
                 "or undomain poles must not appear on typed probe answer paths; "
-                "probe path lengths must not exceed Null"
+                "probe path lengths must not exceed Null; scoreboard reports "
+                "product_exceed vs meet_only_invent when invent applies"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "

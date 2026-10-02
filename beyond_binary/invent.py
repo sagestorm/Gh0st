@@ -1004,6 +1004,51 @@ def _probe_path_economy_ok(before_eng: Engine, after_eng: Engine) -> bool:
     return True
 
 
+def product_exceed_reasons(
+    before_eng: Engine,
+    after_eng: Engine,
+    pre: Any,
+    post: Any,
+) -> list[str]:
+    """#9: ways invent strictly exceeds pre-invent product metrics.
+
+    Exceeds (any one is enough):
+    - shorter path on a present cascade probe, or lower probe_path_len_total
+    - StructuralScore.better_than (coverage / symmetry / unused cost / leaner)
+    - more answerable cascade probes (usable coverage) without lengthening paths
+    """
+    reasons: list[str] = []
+    if post is not None and pre is not None and post.better_than(pre):
+        reasons.append("structural_score")
+
+    before_total = 0
+    after_total = 0
+    measured = 0
+    for topic in product_probes_for(before_eng):
+        before_len = _probe_answer_path_len(before_eng, topic)
+        after_len = _probe_answer_path_len(after_eng, topic)
+        if before_len is None:
+            continue
+        measured += 1
+        before_total += before_len
+        if after_len is None:
+            continue
+        after_total += after_len
+        if after_len < before_len:
+            reasons.append(f"probe_path_shorter:{normalize(topic)}")
+    if measured and after_total < before_total:
+        reasons.append("probe_path_len_total")
+
+    # Usable coverage: more present answerable cascade poles, paths not longer.
+    before_probes = product_probes_for(before_eng)
+    after_probes = product_probes_for(after_eng)
+    if len(after_probes) > len(before_probes) and _probe_path_economy_ok(
+        before_eng, after_eng
+    ):
+        reasons.append("usable_probe_coverage")
+    return reasons
+
+
 def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, Any, str]:
     """Trial-apply search edit_ast; return (ok, pre_score, post_score, reason)."""
     from . import search_substrate as search_mod
@@ -1025,6 +1070,9 @@ def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, An
     # #6/#7: probe path length must not regress on any measured probe.
     if not _probe_path_economy_ok(eng, trial):
         return False, pre, post, "probe_path_len"
+    # #9: prefer exceeds via search ranking; path-neutral meet is allowed when
+    # no exceed is available (verify invent_domain must not starve). Scoreboard
+    # still reports product_exceed vs meet_only_invent honestly.
     return True, pre, post, "ok"
 
 
