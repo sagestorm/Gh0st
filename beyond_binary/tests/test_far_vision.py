@@ -2212,7 +2212,7 @@ class ProductiveInventTests(unittest.TestCase):
                 )
 
     def test_scoreboard_follow_on_invent_only_when_exceed_remains(self):
-        """#11/#12: follow-on invent_domain gated on search_has_product_exceed_candidate."""
+        """#11/#12/#13: follow-on invent_domain loops while exceed candidates remain."""
         from beyond_binary import product_scoreboard as sb
         from beyond_binary import invent as invent_mod
         import os
@@ -2223,14 +2223,15 @@ class ProductiveInventTests(unittest.TestCase):
         from beyond_binary import substrate as substrate_mod
 
         report = sb.run_scoreboard()
-        # #12: invent-motif coverage remains after invent-on-think → follow-on accumulates.
+        # #12/#13: invent-motif coverage → iterative follow-on accumulates.
         self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
         self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
         if report["search"].get("invent_applied") and report.get("product_exceed"):
             if report.get("follow_on_invent"):
-                self.assertGreaterEqual(int(report.get("invent_count") or 0), 2)
+                # #13: tip path has ≥3 exceeds → invent_count ≥3 when follow-on fires.
+                self.assertGreaterEqual(int(report.get("invent_count") or 0), 3)
                 self.assertGreaterEqual(
-                    len(report["search"].get("invent_instances") or []), 2
+                    len(report["search"].get("invent_instances") or []), 3
                 )
                 self.assertFalse(report.get("meet_only_invent"))
             else:
@@ -2257,6 +2258,60 @@ class ProductiveInventTests(unittest.TestCase):
                 substrate_mod.reset_logs_for_tests()
             # #12: motif usable-coverage exceed remains after invent-on-think rehang.
             self.assertTrue(has_exceed)
+
+    def test_scoreboard_iterates_follow_on_until_exceed_pool_empty(self):
+        """#13: scoreboard keeps applying product-exceed invents until pool empty."""
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import invent as invent_mod
+        import os
+        import tempfile
+        from pathlib import Path
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import store
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import mind as mind_mod
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
+        self.assertTrue(report.get("follow_on_invent"))
+        invent_count = int(report.get("invent_count") or 0)
+        self.assertGreaterEqual(invent_count, 3)
+        self.assertEqual(
+            invent_count, len(report["search"].get("invent_instances") or [])
+        )
+        self.assertTrue(report.get("product_exceed"))
+        self.assertFalse(report.get("meet_only_invent"))
+        # Reproduce search arm: after invent-on-think + bounded follow-ons, pool empty.
+        with tempfile.TemporaryDirectory() as tmp:
+            mind = Path(tmp) / "mind.json"
+            eng = Engine(
+                seed_same_center(("thermal", "ontology", "optical"), minimal=True)
+            )
+            store.save(eng.torus, mind)
+            os.environ[substrate_mod.ENV_FLAG] = "search"
+            try:
+                substrate_mod.reset_logs_for_tests()
+                center = LivingCenter(eng)
+                center.mind_store = mind
+                center.think(6)
+                applied = 0
+                for _ in range(sb.MAX_FOLLOW_ON_INVENTS):
+                    if not invent_mod.search_has_product_exceed_candidate(eng):
+                        break
+                    follow = mind_mod.invent_domain(eng, mind, cycle=applied + 2)
+                    if not (
+                        isinstance(follow, dict)
+                        and follow.get("invented") is not False
+                        and isinstance(follow.get("invention"), dict)
+                    ):
+                        break
+                    applied += 1
+                self.assertGreaterEqual(applied, 2)
+                self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
+            finally:
+                os.environ.pop(substrate_mod.ENV_FLAG, None)
+                substrate_mod.reset_logs_for_tests()
 
     def test_motif_add_dual_exceeds_after_invent_on_think(self):
         """#12: typed invent-motif dual earns usable_probe_coverage after invent-on-think."""

@@ -24,6 +24,8 @@ from . import substrate as substrate_mod
 DEFAULT_PROBES: tuple[str, ...] | None = None
 DEFAULT_DOMAINS: tuple[str, ...] = ("thermal", "ontology", "optical")
 DEFAULT_THINK_STEPS = 6
+# #13: bound follow-on invent_domain loops while product-exceed candidates remain.
+MAX_FOLLOW_ON_INVENTS = 8
 
 
 def _path_names(dual: Any) -> list[str]:
@@ -176,10 +178,12 @@ def _run_arm(
                     invent_instance = inst
                 if prov:
                     invent_provenance = prov
-            # Optional follow-on invent_domain only while a product exceed remains.
-            if invent_mod.search_has_product_exceed_candidate(eng):
-                from . import mind as mind_mod
+            # #13: loop follow-on invent_domain while product exceed remains (bounded).
+            from . import mind as mind_mod
 
+            for _ in range(MAX_FOLLOW_ON_INVENTS):
+                if not invent_mod.search_has_product_exceed_candidate(eng):
+                    break
                 follow = mind_mod.invent_domain(
                     eng, path, cycle=max(1, invent_count) + 1
                 )
@@ -187,14 +191,15 @@ def _run_arm(
                     follow if isinstance(follow, dict) else None,
                     invent_instances=invent_instances,
                 )
-                if applied:
-                    invent_applied = True
-                    follow_on_invent = True
-                    invent_count += 1
-                    if inst:
-                        invent_instance = inst
-                    if prov:
-                        invent_provenance = prov
+                if not applied:
+                    break
+                invent_applied = True
+                follow_on_invent = True
+                invent_count += 1
+                if inst:
+                    invent_instance = inst
+                if prov:
+                    invent_provenance = prov
         finally:
             if prev is None:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
@@ -420,9 +425,10 @@ def run_scoreboard(
                 "be zero; probe answerability must not regress; typed cross-domain "
                 "or undomain poles must not appear on typed probe answer paths; "
                 "probe path lengths must not exceed Null; search arm exercises "
-                "invent-on-think (optional follow-on invent_domain while exceed "
-                "remains, including invent-motif usable coverage after cascade fill) "
-                "and reports cumulative product_exceed vs meet_only_invent"
+                "invent-on-think (iterative follow-on invent_domain while exceed "
+                "candidates remain, bounded, including invent-motif usable coverage "
+                "after cascade fill) and reports cumulative product_exceed vs "
+                "meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "
