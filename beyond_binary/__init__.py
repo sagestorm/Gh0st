@@ -3,4 +3,4 @@
 Cause/effect hemispheres, center think/cycle loop, CLI, hot/cold thermal instance.
 """
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"

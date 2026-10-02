@@ -499,7 +499,11 @@ class OpenMindScaffoldTests(unittest.TestCase):
         )
         self.assertTrue(pol.observed_signals)
         strat = policy_mod.strategy_from_policy(pol, journal_entries=entries)
-        self.assertIn(":prog:", strat["reason"])
+        self.assertTrue(pol.meta_primitives)
+        self.assertGreaterEqual(pol.meta_isa_revisions, 1)
+        self.assertTrue(
+            ":meta_isa:" in strat["reason"] or strat.get("meta_isa")
+        )
 
         # Same weights, different rule sets → different strategies.
         a = policy_mod.MetaPolicy(updates=1, grow_weight=1.0, prune_weight=1.0)
@@ -620,6 +624,30 @@ class OpenMindScaffoldTests(unittest.TestCase):
                 reg, adverse, inventions_fired=1
             )
             self.assertTrue(any(c.abandoned for c in reg.candidates))
+
+            from beyond_binary import goals as goals_mod
+
+            board = goals_mod.form_goals_from_outcomes(
+                goals_mod.GoalBoard(),
+                adverse
+                + [
+                    JournalEntry(
+                        cycle=60 + i,
+                        reflection="growth_fruitful",
+                        signals={"flags": 0, "grow_count": 1, "node_delta": 2},
+                        strategy_hint="grow",
+                    )
+                    for i in range(3)
+                ],
+                invent_summary={
+                    "abandoned_sources": ["concept"],
+                    "abandoned_count": 1,
+                    "prefer_source": "topology",
+                },
+            )
+            novel = goals_mod.novel_act_kinds(board)
+            self.assertTrue(novel)
+            self.assertTrue(all(a not in goals_mod.SEED_GOAL_ACTS for a in novel))
 
 
 class VerifyFarVisionTests(unittest.TestCase):

@@ -406,52 +406,56 @@ def run_verification() -> dict[str, Any]:
         pc.think(8)
         pol = policy_mod.load_policy(pol_path)
         learned_rules = [r for r in pol.rules if r.origin == "learned" and r.enabled]
-        prog_conds = [
+        meta_prims = [
             k
-            for k, v in pol.condition_kinds.items()
-            if isinstance(v, dict)
-            and v.get("kind") == "program"
-            and isinstance(v.get("body"), list)
-            and len(v.get("body") or []) >= 2
+            for k, v in pol.meta_primitives.items()
+            if str(k).startswith("meta_prim_")
+            and isinstance(v, dict)
+            and v.get("kind")
+            not in policy_mod.SEED_META_OPS
+            and "body" not in v  # not a seed-op composition
         ]
-        prog_acts = [
-            k
-            for k, v in pol.action_kinds.items()
-            if isinstance(v, dict)
-            and v.get("kind") == "program"
-            and isinstance(v.get("body"), list)
-            and len(v.get("body") or []) >= 1
-        ]
+        # Program bodies must *use* extended meta-ISA opcodes.
+        uses_ext = []
+        for k, v in pol.condition_kinds.items():
+            if not isinstance(v, dict) or v.get("kind") != "program":
+                continue
+            body = list(v.get("body") or [])
+            used = [
+                str(s.get("op"))
+                for s in body
+                if str(s.get("op", "")).startswith("meta_prim_")
+            ]
+            if used:
+                uses_ext.append(k)
         reason = str(pc.strategy.reason)
-        # Persisted program bodies on disk.
         pol_disk = json.loads(policy_mod.policy_path(pol_path).read_text(encoding="utf-8"))
-        disk_prog = [
+        disk_meta = [
             k
-            for k, v in (pol_disk.get("condition_kinds") or {}).items()
-            if isinstance(v, dict) and v.get("kind") == "program" and v.get("body")
+            for k in (pol_disk.get("meta_primitives") or {})
+            if str(k).startswith("meta_prim_")
         ]
         pol_ok = (
             policy_mod.policy_path(pol_path).exists()
             and pol.updates >= 1
             and pol.rule_revisions >= 1
-            and pol.kind_revisions >= 1
+            and pol.meta_isa_revisions >= 1
             and len(learned_rules) >= 1
-            and len(prog_conds) >= 1
-            and len(prog_acts) >= 1
-            and len(disk_prog) >= 1
+            and len(meta_prims) >= 1
+            and len(uses_ext) >= 1
+            and len(disk_meta) >= 1
             and len(pol.observed_signals) >= 1
             and pc.strategy.from_policy
-            and ":prog:" in reason
+            and (":meta_isa:" in reason or pc.strategy.meta_isa)
         )
         gate(
             "C3p",
-            "Metacognition learns executable program kinds over journal vectors",
+            "Metacognition extends its own meta-ISA with new opcodes",
             pol_ok,
             (
-                f"updates={pol.updates} revisions={pol.rule_revisions} "
-                f"kind_revisions={pol.kind_revisions} "
-                f"prog_conds={prog_conds[:2]} prog_acts={prog_acts[:2]} "
-                f"disk_prog={disk_prog[:2]} observed={pol.observed_signals[:6]} "
+                f"updates={pol.updates} meta_isa_revisions={pol.meta_isa_revisions} "
+                f"meta_prims={meta_prims[:3]} uses_ext={uses_ext[:2]} "
+                f"disk_meta={disk_meta[:3]} observed={pol.observed_signals[:6]} "
                 f"learned={len(learned_rules)} reason={reason}"
             ),
         )
@@ -498,8 +502,9 @@ def run_verification() -> dict[str, Any]:
             for r in self_live.get("inventions", [])
         )
         self_nurtured = len(self_live.get("nurtured") or []) > 0
-        # Outcome-trace abandon: adverse journal after used invent → abandoned targets.
+        # Outcome-trace abandon + open goals from journal traces.
         from .journal import JournalEntry
+        from . import goals as goals_mod
 
         inv_reg = invent_mod.load_invent_registry(self_path)
         used_before = [c for c in inv_reg.candidates if c.used]
@@ -525,9 +530,31 @@ def run_verification() -> dict[str, Any]:
             for c in inv_reg.candidates
             if not c.used and not c.abandoned and c.priority > 1.0
         ]
-        # Strategy should surface abandon / prefer_source after metacognize.
         sc2.journal_entries.extend(adverse)
+        sc2.journal_entries.extend(
+            [
+                JournalEntry(
+                    cycle=200 + i,
+                    reflection="growth_fruitful",
+                    signals={"flags": 0, "grow_count": 1, "node_delta": 2},
+                    strategy_hint="grow",
+                )
+                for i in range(3)
+            ]
+        )
         sc2.metacognize()
+        board = goals_mod.load_goals(self_path)
+        novel_acts = goals_mod.novel_act_kinds(board)
+        goals_ok = (
+            goals_mod.goals_path(self_path).exists()
+            and board.revisions >= 1
+            and len(novel_acts) >= 1
+            and all(a not in goals_mod.SEED_GOAL_ACTS for a in novel_acts)
+            and (
+                bool(sc2.strategy.novel_act_kinds)
+                or bool(sc2.strategy.active_goals)
+            )
+        )
         abandon_ok = (
             len(abandoned) >= 1
             and (
@@ -538,13 +565,14 @@ def run_verification() -> dict[str, Any]:
         )
         gate(
             "C6s",
-            "Self-directed invent+nurture with outcome-trace abandon/reprioritize",
-            self_invented and self_nurtured and abandon_ok,
+            "Open goal formation with novel act kinds (beyond invent-source menu)",
+            self_invented and self_nurtured and abandon_ok and goals_ok,
             (
                 f"invented={self_invented} nurtured={self_nurtured} "
                 f"abandoned={[c.instance for c in abandoned][:3]} "
-                f"abandoned_sources={sc2.strategy.abandoned_sources} "
-                f"prefer_source={sc2.strategy.invent_prefer_source} "
+                f"novel_acts={novel_acts[:4]} "
+                f"goal_revisions={board.revisions} "
+                f"strategy_goals={len(sc2.strategy.active_goals or [])} "
                 f"boosted={len(unused_boosted)} "
                 f"cycles={self_live.get('cycle_count')} "
                 f"strategy={sc2.strategy.reason}"
@@ -666,13 +694,11 @@ def run_verification() -> dict[str, Any]:
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Topology invent, meta microprograms, invent-target abandon, and "
-            "body-proposed CapProgram primitives are stronger scaffolds — still "
-            "bound by a finite primitive-spec compiler (reduce_path/pair_metric/"
-            "branch_fanout), fixed meta-ISA, and invent-source abandon menu. "
-            "Missing vs sentience-evidence-bar.md: primitives outside the query-"
-            "spec compiler, meta-ISA self-extension, open goal formation beyond "
-            "invent-source abandon/reprioritize."
+            "Meta-ISA extensions, open goal acts, topology invent, and CapProgram "
+            "primitives are stronger scaffolds — still bound by finite compilers "
+            "(meta_prim kinds / goal act vocabulary / prim-spec kinds / topology "
+            "edit class). Missing vs sentience-evidence-bar.md: opcodes and goals "
+            "outside those finite proposal vocabularies."
         ),
     }
     gates.append(sentience)

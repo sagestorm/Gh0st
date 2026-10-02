@@ -50,6 +50,22 @@ PREFERENCE_CHANNELS = (
     "suppress_grow",
 )
 
+# Seed meta-ISA — programs may extend this via meta_primitives (not only compose these).
+SEED_META_OPS = frozenset(
+    {
+        "load_signal",
+        "const",
+        "mul",
+        "add",
+        "cmp",
+        "emit_pred",
+        "bias_channel",
+        "set_grow_budget",
+    }
+)
+# Installed meta primitive handlers: name → callable(regs, vec, step, scores, extras, strength)
+_META_PRIMITIVE_IMPLS: dict[str, Any] = {}
+
 
 @dataclass
 class MetaRule:
@@ -110,6 +126,9 @@ class MetaPolicy:
     kind_revisions: int = 0
     # Empirical signal keys observed across journal history.
     observed_signals: list[str] = field(default_factory=list)
+    # Meta-ISA extensions: name → declarative spec (compiled into new opcodes).
+    meta_primitives: dict[str, dict[str, Any]] = field(default_factory=dict)
+    meta_isa_revisions: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +145,8 @@ class MetaPolicy:
             "condition_kinds": self.condition_kinds,
             "action_kinds": self.action_kinds,
             "observed_signals": list(self.observed_signals),
+            "meta_primitives": {k: dict(v) for k, v in self.meta_primitives.items()},
+            "meta_isa_revisions": self.meta_isa_revisions,
         }
 
     @classmethod
@@ -136,7 +157,7 @@ class MetaPolicy:
             if rules_raw
             else _seed_rules()
         )
-        return cls(
+        pol = cls(
             policy_id=str(data.get("policy_id") or f"pol-{uuid.uuid4().hex[:8]}"),
             grow_weight=float(data.get("grow_weight", 1.0)),
             prune_weight=float(data.get("prune_weight", 0.5)),
@@ -150,7 +171,15 @@ class MetaPolicy:
             action_kinds=dict(data.get("action_kinds") or {}),
             kind_revisions=int(data.get("kind_revisions", 0) or 0),
             observed_signals=list(data.get("observed_signals") or []),
+            meta_primitives={
+                str(k): dict(v)
+                for k, v in (data.get("meta_primitives") or {}).items()
+            },
+            meta_isa_revisions=int(data.get("meta_isa_revisions", 0) or 0),
         )
+        for name, spec in pol.meta_primitives.items():
+            install_meta_primitive(name, spec)
+        return pol
 
     def known_conditions(self) -> set[str]:
         return set(SEED_CONDITIONS) | set(self.condition_kinds)
@@ -295,6 +324,161 @@ def _eval_expr(spec: dict[str, Any], vec: dict[str, float]) -> bool:
     return False
 
 
+def compile_meta_primitive_spec(spec: dict[str, Any]) -> Any | None:
+    """Compile a new meta opcode — not a composition of SEED_META_OPS alone."""
+    kind = str(spec.get("kind", ""))
+
+    if kind == "signal_ratio":
+        a_key = str(spec.get("a", "node_delta"))
+        b_key = str(spec.get("b", "grow_count"))
+        into = str(spec.get("into", "ratio"))
+
+        def _ratio(regs, vec, step, scores, extras, strength) -> None:
+            a = float(vec.get(step.get("a", a_key), regs.get(a_key, 0.0)))
+            b = float(vec.get(step.get("b", b_key), regs.get(b_key, 0.0)))
+            dest = str(step.get("into", into))
+            regs[dest] = a / b if b else 0.0
+
+        return _ratio
+
+    if kind == "margin_gate":
+        a_key = str(spec.get("a", "fruitful"))
+        b_key = str(spec.get("b", "stalled"))
+        margin = float(spec.get("margin", 0.0))
+        into = str(spec.get("into", "margin_ok"))
+
+        def _margin(regs, vec, step, scores, extras, strength) -> None:
+            a = float(vec.get(step.get("a", a_key), 0.0))
+            b = float(vec.get(step.get("b", b_key), 0.0))
+            m = float(step.get("margin", margin))
+            dest = str(step.get("into", into))
+            regs[dest] = 1.0 if (a - b) >= m else 0.0
+
+        return _margin
+
+    if kind == "clamp_signal":
+        sig = str(spec.get("signal", "flags"))
+        lo = float(spec.get("lo", 0.0))
+        hi = float(spec.get("hi", 1.0))
+        into = str(spec.get("into", "clamped"))
+
+        def _clamp(regs, vec, step, scores, extras, strength) -> None:
+            v = float(vec.get(step.get("signal", sig), 0.0))
+            dest = str(step.get("into", into))
+            regs[dest] = max(lo, min(hi, v))
+
+        return _clamp
+
+    if kind == "invert_signal":
+        sig = str(spec.get("signal", "flags"))
+        into = str(spec.get("into", "inv"))
+
+        def _invert(regs, vec, step, scores, extras, strength) -> None:
+            v = float(vec.get(step.get("signal", sig), regs.get(sig, 0.0)))
+            dest = str(step.get("into", into))
+            regs[dest] = 1.0 - v if v <= 1.0 else -v
+
+        return _invert
+
+    return None
+
+
+def install_meta_primitive(name: str, spec: dict[str, Any]) -> bool:
+    """Install a meta-ISA extension opcode (must be meta_prim_*)."""
+    if not name.startswith("meta_prim_"):
+        return False
+    if name in SEED_META_OPS:
+        return False
+    fn = compile_meta_primitive_spec(spec)
+    if fn is None:
+        return False
+    _META_PRIMITIVE_IMPLS[name] = fn
+    return True
+
+
+def validate_meta_primitive(
+    name: str, spec: dict[str, Any], vec: dict[str, float]
+) -> bool:
+    """Accept only if the new opcode runs and yields a finite register."""
+    if not install_meta_primitive(name, spec):
+        return False
+    regs: dict[str, float] = {}
+    try:
+        _META_PRIMITIVE_IMPLS[name](regs, vec, {"op": name}, None, None, 1.0)
+    except Exception:  # noqa: BLE001
+        return False
+    into = str(spec.get("into", ""))
+    if into and into in regs:
+        val = regs[into]
+        try:
+            if val != val:
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+    return bool(regs)
+
+
+def propose_meta_primitives(
+    policy: MetaPolicy, vec: dict[str, float]
+) -> list[str]:
+    """Extend meta-ISA from journal vector pressure — new opcodes, not seed compositions."""
+    proposed: list[str] = []
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    if float(vec.get("fruitful", 0.0)) >= 1 or float(vec.get("stalled", 0.0)) >= 1:
+        candidates.append(
+            (
+                "meta_prim_outcome_margin",
+                {
+                    "kind": "margin_gate",
+                    "a": "fruitful",
+                    "b": "stalled",
+                    "margin": 0.0,
+                    "into": "margin_ok",
+                    "origin": "meta-isa-extension",
+                },
+            )
+        )
+    if float(vec.get("node_delta", 0.0)) > 0 and float(vec.get("grow_count", 0.0)) > 0:
+        candidates.append(
+            (
+                "meta_prim_growth_ratio",
+                {
+                    "kind": "signal_ratio",
+                    "a": "node_delta",
+                    "b": "grow_count",
+                    "into": "nd_per_grow",
+                    "origin": "meta-isa-extension",
+                },
+            )
+        )
+    if float(vec.get("flags", 0.0)) >= 0:
+        candidates.append(
+            (
+                "meta_prim_flags_clamp",
+                {
+                    "kind": "clamp_signal",
+                    "signal": "flags",
+                    "lo": 0.0,
+                    "hi": 3.0,
+                    "into": "flags_clamped",
+                    "origin": "meta-isa-extension",
+                },
+            )
+        )
+
+    for name, spec in candidates:
+        if name in policy.meta_primitives:
+            continue
+        if not validate_meta_primitive(name, spec, vec):
+            continue
+        policy.meta_primitives[name] = dict(spec)
+        policy.meta_isa_revisions += 1
+        policy.kind_revisions += 1
+        proposed.append(name)
+    return proposed
+
+
 def run_meta_program(
     body: list[dict[str, Any]],
     vec: dict[str, float],
@@ -305,13 +489,15 @@ def run_meta_program(
 ) -> dict[str, Any]:
     """Interpret a CapProgram-like microprogram over a journal signal vector.
 
-    Condition programs emit ``pred`` (truthy). Action programs may bias channels
-    or set grow budget via ops — executable data, not schema tags alone.
+    Dispatches seed meta-ISA ops and installed meta_prim_* extensions.
     """
     regs: dict[str, float] = {}
     pred = False
     for step in body:
         op = str(step.get("op", ""))
+        if op in _META_PRIMITIVE_IMPLS:
+            _META_PRIMITIVE_IMPLS[op](regs, vec, step, scores, extras, strength)
+            continue
         if op == "load_signal":
             sig = str(step.get("signal", ""))
             into = str(step.get("into", sig))
@@ -426,7 +612,7 @@ def revise_kinds_from_outcomes(
     policy: MetaPolicy,
     entries: list[JournalEntry],
 ) -> MetaPolicy:
-    """Invent program kinds (executable) from journal signals; expr is secondary."""
+    """Invent program kinds + extend meta-ISA from journal signals."""
     if len(entries) < 2:
         return policy
     seed_counts = _signals_from_entries(entries)
@@ -435,6 +621,9 @@ def revise_kinds_from_outcomes(
     for key in sorted(vec.keys()):
         if key not in policy.observed_signals:
             policy.observed_signals.append(key)
+
+    # Extend meta-ISA with new opcodes (not only compose SEED_META_OPS).
+    proposed_meta = propose_meta_primitives(policy, vec)
 
     fruitful = float(vec.get("fruitful", 0.0))
     stalled = float(vec.get("stalled", 0.0))
@@ -475,7 +664,52 @@ def revise_kinds_from_outcomes(
                 float(w) * float(vec.get(k, 0.0)) for k, w in weights.items()
             )
             threshold = round(max(0.5, approx * 0.35), 4)
-            prog_body = _weights_to_program(weights, threshold)
+            # Prefer a program that *uses* extended meta-ISA opcodes when available.
+            if "meta_prim_outcome_margin" in policy.meta_primitives:
+                prog_body = [
+                    {"op": "meta_prim_outcome_margin"},
+                ]
+                if "meta_prim_growth_ratio" in policy.meta_primitives:
+                    prog_body.append({"op": "meta_prim_growth_ratio"})
+                    prog_body.append(
+                        {
+                            "op": "cmp",
+                            "a": "nd_per_grow",
+                            "cmp": ">=",
+                            "value": 0.5,
+                            "into": "ratio_ok",
+                        }
+                    )
+                    prog_body.append(
+                        {
+                            "op": "add",
+                            "a": "margin_ok",
+                            "b": "ratio_ok",
+                            "into": "combo",
+                        }
+                    )
+                    prog_body.append(
+                        {
+                            "op": "cmp",
+                            "a": "combo",
+                            "cmp": ">=",
+                            "value": 1.0,
+                            "into": "ok",
+                        }
+                    )
+                else:
+                    prog_body.append(
+                        {
+                            "op": "cmp",
+                            "a": "margin_ok",
+                            "cmp": ">=",
+                            "value": 1.0,
+                            "into": "ok",
+                        }
+                    )
+                prog_body.append({"op": "emit_pred", "flag": "ok"})
+            else:
+                prog_body = _weights_to_program(weights, threshold)
             cname = "cond_prog_growth"
             register_condition_kind(
                 policy,
@@ -485,22 +719,35 @@ def revise_kinds_from_outcomes(
                     "body": prog_body,
                     "origin": "learned-program",
                     "features": sorted(weights.keys()),
+                    "uses_meta_primitives": [
+                        s.get("op")
+                        for s in prog_body
+                        if str(s.get("op", "")).startswith("meta_prim_")
+                    ],
                 },
             )
             aname = "act_prog_invent"
+            act_body: list[dict[str, Any]] = [
+                {
+                    "op": "bias_channel",
+                    "channel": "prefer_invent",
+                    "amount": 1.4,
+                }
+            ]
+            if "meta_prim_flags_clamp" in policy.meta_primitives:
+                act_body.insert(0, {"op": "meta_prim_flags_clamp"})
             register_action_kind(
                 policy,
                 name=aname,
                 definition={
                     "kind": "program",
-                    "body": [
-                        {
-                            "op": "bias_channel",
-                            "channel": "prefer_invent",
-                            "amount": 1.4,
-                        }
-                    ],
+                    "body": act_body,
                     "origin": "learned-program",
+                    "uses_meta_primitives": [
+                        s.get("op")
+                        for s in act_body
+                        if str(s.get("op", "")).startswith("meta_prim_")
+                    ],
                 },
             )
             existing = {(r.when, r.then) for r in policy.rules if r.enabled}
@@ -516,7 +763,6 @@ def revise_kinds_from_outcomes(
                 )
                 policy.rule_revisions += 1
 
-            # Keep expr mirror for compat / older gates reading features.
             register_condition_kind(
                 policy,
                 name="cond_expr_growth",
@@ -529,6 +775,23 @@ def revise_kinds_from_outcomes(
                     "features": sorted(weights.keys()),
                 },
             )
+
+    # Ensure meta-ISA extensions exist even when weight learning is thin.
+    if proposed_meta and "cond_prog_growth" not in policy.condition_kinds:
+        body = [{"op": proposed_meta[0]}, {"op": "emit_pred", "flag": "margin_ok"}]
+        # margin_ok only for margin_gate; fall back to any into.
+        into = str(policy.meta_primitives[proposed_meta[0]].get("into", "ok"))
+        body = [{"op": proposed_meta[0]}, {"op": "emit_pred", "flag": into}]
+        register_condition_kind(
+            policy,
+            name="cond_prog_meta_isa",
+            definition={
+                "kind": "program",
+                "body": body,
+                "origin": "learned-program",
+                "uses_meta_primitives": [proposed_meta[0]],
+            },
+        )
 
     # Secondary: compound / threshold (compat scaffolds).
     active_seeds = sorted(k for k, v in seed_counts.items() if v >= 1)
@@ -754,6 +1017,19 @@ def _apply_action(
             extras=extras,
             strength=strength,
         )
+    elif kind == "goal_act":
+        act = str(spec.get("act", ""))
+        if act == "seek_topology_bridge":
+            scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + strength
+            extras["invent_prefer_source"] = "topology"
+        elif act == "retire_invent_pressure":
+            scores["prefer_invent"] = max(
+                0.0, scores.get("prefer_invent", 0.0) - strength
+            )
+        elif act == "deepen_nurture_lineage":
+            scores["prefer_nurture"] = scores.get("prefer_nurture", 0.0) + strength
+        elif act == "propose_body_primitive":
+            scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + 0.5 * strength
     elif kind == "bias":
         channel = str(spec.get("channel", "prefer_invent"))
         amount = float(spec.get("amount", 1.0)) * strength
@@ -779,8 +1055,12 @@ def strategy_from_policy(
     max_new_pairs: int = 1,
     journal_entries: list[JournalEntry] | list[dict[str, Any]] | None = None,
     invent_targets: dict[str, Any] | None = None,
+    goal_hints: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Derive strategy from rules over seed + learned program/expr kinds."""
+    for name, spec in policy.meta_primitives.items():
+        install_meta_primitive(name, spec)
+
     normalized: list[JournalEntry] = []
     for row in journal_entries or []:
         if isinstance(row, JournalEntry):
@@ -799,6 +1079,7 @@ def strategy_from_policy(
     novel_kind_fired = False
     expr_kind_fired = False
     prog_kind_fired = False
+    meta_isa_fired = False
 
     for rule in policy.rules:
         if not rule.enabled:
@@ -811,6 +1092,15 @@ def strategy_from_policy(
             aspec = policy.action_kinds.get(rule.then) or {}
             if cspec.get("kind") == "program" or aspec.get("kind") == "program":
                 prog_kind_fired = True
+                uses = list(cspec.get("uses_meta_primitives") or []) + list(
+                    aspec.get("uses_meta_primitives") or []
+                )
+                if uses or any(
+                    str(s.get("op", "")).startswith("meta_prim_")
+                    for s in list(cspec.get("body") or [])
+                    + list(aspec.get("body") or [])
+                ):
+                    meta_isa_fired = True
             if cspec.get("kind") == "expr" or aspec.get("origin") == "learned-expr":
                 expr_kind_fired = True
         _apply_action(rule.then, policy, scores, rule.strength, extras, vec=vec)
@@ -826,12 +1116,23 @@ def strategy_from_policy(
     abandoned = list(targets.get("abandoned_sources") or [])
     prefer_source = str(targets.get("prefer_source") or "")
     abandoned_count = int(targets.get("abandoned_count") or 0)
-    # Outcome traces: if invent sources were abandoned, nudge away from blind invent.
     if abandoned_count >= 1 and not prefer_source:
         scores["prefer_invent"] = max(0.0, scores["prefer_invent"] - 0.5)
         scores["prefer_nurture"] += 0.3
     if prefer_source == "topology":
         scores["prefer_invent"] += 0.6
+
+    gh = goal_hints or {}
+    if gh.get("goal_suppress_invent"):
+        scores["prefer_invent"] = max(0.0, scores["prefer_invent"] - 1.5)
+    if gh.get("goal_want_nurture"):
+        scores["prefer_nurture"] += 0.8
+    if gh.get("goal_want_invent"):
+        scores["prefer_invent"] += 0.8
+    if gh.get("goal_invent_prefer_source"):
+        prefer_source = str(gh["goal_invent_prefer_source"]) or prefer_source
+        if prefer_source == "topology":
+            scores["prefer_invent"] += 0.4
 
     actionable = {k: v for k, v in scores.items() if k != "suppress_grow"}
     dominant = max(actionable, key=actionable.get)
@@ -845,17 +1146,25 @@ def strategy_from_policy(
         "active_rules": fired,
         "rule_revisions": policy.rule_revisions,
         "kind_revisions": policy.kind_revisions,
+        "meta_isa_revisions": policy.meta_isa_revisions,
+        "meta_primitives": sorted(policy.meta_primitives.keys()),
         "novel_kinds": novel_kind_fired,
         "expr_kinds": expr_kind_fired,
         "prog_kinds": prog_kind_fired,
+        "meta_isa": meta_isa_fired,
         "condition_kind_count": len(policy.condition_kinds),
         "action_kind_count": len(policy.action_kinds),
         "observed_signals": list(policy.observed_signals),
         "invent_prefer_source": prefer_source,
         "abandoned_sources": abandoned,
         "abandoned_count": abandoned_count,
+        "active_goals": list(gh.get("active_goals") or []),
+        "novel_act_kinds": list(gh.get("novel_act_kinds") or []),
+        "goal_revisions": int(gh.get("goal_revisions") or 0),
     }
-    if prog_kind_fired:
+    if meta_isa_fired:
+        tag = "meta_isa"
+    elif prog_kind_fired:
         tag = "prog"
     elif expr_kind_fired:
         tag = "expr"

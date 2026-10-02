@@ -95,6 +95,10 @@ class Strategy:
     invent_prefer_source: str = ""
     abandoned_sources: list[str] | None = None
     abandoned_count: int = 0
+    novel_act_kinds: list[str] | None = None
+    active_goals: list[dict[str, Any]] | None = None
+    meta_isa: bool = False
+    meta_primitives: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +114,10 @@ class Strategy:
             "invent_prefer_source": self.invent_prefer_source,
             "abandoned_sources": list(self.abandoned_sources or []),
             "abandoned_count": self.abandoned_count,
+            "novel_act_kinds": list(self.novel_act_kinds or []),
+            "active_goals": list(self.active_goals or []),
+            "meta_isa": self.meta_isa,
+            "meta_primitives": list(self.meta_primitives or []),
         }
 
     @classmethod
@@ -127,6 +135,10 @@ class Strategy:
             invent_prefer_source=str(data.get("invent_prefer_source", "")),
             abandoned_sources=list(data.get("abandoned_sources") or []),
             abandoned_count=int(data.get("abandoned_count", 0) or 0),
+            novel_act_kinds=list(data.get("novel_act_kinds") or []),
+            active_goals=list(data.get("active_goals") or []),
+            meta_isa=bool(data.get("meta_isa", False)),
+            meta_primitives=list(data.get("meta_primitives") or []),
         )
 
 
@@ -200,10 +212,12 @@ class LivingCenter:
                     self.mind_store
                 ).exists():
                     policy_mod.save_policy(pol, self.mind_store)
-            # Outcome-trace invent targets (abandon / reprioritize).
+            # Outcome-trace invent targets + open goals (beyond invent-source menu).
             invent_targets: dict[str, Any] = {}
+            goal_hints: dict[str, Any] = {}
             try:
                 from . import invent as invent_mod
+                from . import goals as goals_mod
 
                 inv_reg = invent_mod.refresh_invent_registry(
                     self.engine,
@@ -230,13 +244,33 @@ class LivingCenter:
                     ),
                     "prefer_source": prefer,
                 }
+                board = goals_mod.load_goals(self.mind_store)
+                board = goals_mod.form_goals_from_outcomes(
+                    board, journal_rows, invent_summary=invent_targets
+                )
+                goals_mod.save_goals(board, self.mind_store)
+                goal_hints = goals_mod.goals_to_strategy_hints(board)
+                # Register novel goal acts as policy action kinds (open menu).
+                for act in goal_hints.get("novel_act_kinds") or []:
+                    policy_mod.register_action_kind(
+                        pol,
+                        name=f"goal_{act}",
+                        definition={
+                            "kind": "goal_act",
+                            "act": act,
+                            "origin": "outcome-goal",
+                        },
+                    )
             except Exception:  # noqa: BLE001
                 invent_targets = {}
-            if pol.updates > 0 or pol.rule_revisions > 0 or any(
+                goal_hints = {}
+            if pol.updates > 0 or pol.rule_revisions > 0 or pol.meta_isa_revisions > 0 or any(
                 r.origin == "learned" for r in pol.rules
             ):
                 # Persist freshly created default policy once so artifacts exist.
                 if not policy_mod.policy_path(self.mind_store).exists():
+                    policy_mod.save_policy(pol, self.mind_store)
+                else:
                     policy_mod.save_policy(pol, self.mind_store)
                 self.strategy = Strategy.from_dict(
                     policy_mod.strategy_from_policy(
@@ -244,6 +278,7 @@ class LivingCenter:
                         max_new_pairs=self.max_new_pairs_per_cycle,
                         journal_entries=journal_rows,
                         invent_targets=invent_targets,
+                        goal_hints=goal_hints,
                     )
                 )
                 return self.strategy
