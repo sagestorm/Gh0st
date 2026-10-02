@@ -719,8 +719,12 @@ def search_invent_asts(
                 reserved.add(normalize(leaf_c))
                 reserved.add(normalize(leaf_e))
 
-    # #9: productive exceeds first; path-neutral meet fallback after.
-    return (productive + other)[:limit]
+    # #9/#10: when ≥1 product exceed exists, emit only exceeds — do not mix
+    # meet-only into the same batch. Path-neutral meet is the fallback only
+    # when the productive pool is empty (C4 invent_domain must not starve).
+    if productive:
+        return productive[:limit]
+    return other[:limit]
 
 
 # ---- Reflect: expression-tree ASTs over journal signals ----
