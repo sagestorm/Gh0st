@@ -709,8 +709,10 @@ def refresh_invent_registry(
                 )
             )
             existing_keys.add(key)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        from . import substrate as _sub
+
+        _sub.record_consult_error("invent", exc)
     save_invent_registry(registry, mind_store)
     return registry
 

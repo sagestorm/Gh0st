@@ -27,6 +27,8 @@ AXES: frozenset[str] = frozenset({"invent", "reflect", "goal", "form"})
 # Reject log for honesty (acceptance rates alone must not flip SENTIENCE).
 _REJECT_LOG: list[dict[str, Any]] = []
 _ACCEPT_LOG: list[dict[str, Any]] = []
+# Caller-path consult exceptions (G6 — no silent swallow).
+_ERROR_LOG: list[dict[str, Any]] = []
 
 
 @dataclass(frozen=True)
@@ -156,6 +158,28 @@ def center_validate(proposal: Proposal, center: Any) -> ValidationResult:
     return sub.validate(proposal, center)
 
 
+def record_consult_error(axis: Axis | str, exc: BaseException) -> None:
+    """Record a caller-path consult failure so islands are not silent (G6)."""
+    _ERROR_LOG.append(
+        {
+            "axis": str(axis),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    )
+    _REJECT_LOG.append(
+        {
+            "proposal_id": None,
+            "axis": str(axis),
+            "reason": f"consult_error:{type(exc).__name__}: {exc}",
+            "provenance": "caller",
+        }
+    )
+
+
+def consult_errors() -> list[dict[str, Any]]:
+    return list(_ERROR_LOG)
+
+
 def consult(
     axis: Axis,
     context: dict[str, Any] | None = None,
@@ -256,6 +280,8 @@ def status() -> dict[str, Any]:
         "axes_with_non_stdlib_accepts": sorted(
             {str(a.get("axis")) for a in non_stdlib_accepts if a.get("axis")}
         ),
+        "consult_errors": list(_ERROR_LOG),
+        "consult_error_count": len(_ERROR_LOG),
     }
 
 
@@ -263,6 +289,7 @@ def reset_logs_for_tests() -> None:
     """Clear accept/reject logs (tests only)."""
     _REJECT_LOG.clear()
     _ACCEPT_LOG.clear()
+    _ERROR_LOG.clear()
     try:
         from . import search_substrate as ss
 

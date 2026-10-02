@@ -258,6 +258,7 @@ def run_verification() -> dict[str, Any]:
             and invented_any
             and nurtured_any
             and live_inv_ok
+            and strategy_shifts
         )
         gate(
             "C6",
@@ -340,6 +341,107 @@ def run_verification() -> dict[str, Any]:
             "Synonym-cascade growth beyond fixed lexicon playback",
             i5_ok,
             f"sources={sorted(set(s for s in syn_sources if s))} synonym_nodes={syn_nodes[:8]}",
+        )
+
+        # I3 — orphan → opposite auto-link during cycle repair
+        orphan_eng = Engine(seed_minimal_hot_cold())
+        orphan_path = root / "orphan.json"
+        store.save(orphan_eng.torus, orphan_path)
+        from .model import Hemisphere, Node
+
+        orphan_eng.torus.nodes["stray"] = Node(
+            name="stray",
+            hemisphere=Hemisphere.CAUSE,
+            parent="hot",
+            opposite=None,
+        )
+        before_orphans = orphan_eng.orphans()
+        oc = LivingCenter(orphan_eng, history=[])
+        oc.mind_store = orphan_path
+        oc.cycle()
+        after_node = orphan_eng.get("stray") if orphan_eng.exists("stray") else None
+        try:
+            orphan_eng.assert_no_orphans()
+            i3_no_orphans = True
+        except Exception:  # noqa: BLE001
+            i3_no_orphans = False
+        i3_ok = (
+            bool(before_orphans)
+            and after_node is not None
+            and bool(after_node.opposite)
+            and i3_no_orphans
+        )
+        gate(
+            "I3",
+            "Orphan → opposite auto-link",
+            i3_ok,
+            f"before_orphans={before_orphans} after_opp={getattr(after_node, 'opposite', None)} "
+            f"no_orphans={i3_no_orphans}",
+        )
+
+        # I4 — equal-in/out elegance: think does not explode duplicates past soft cap
+        eleg_path = root / "elegance.json"
+        eeng = Engine(seed_minimal_hot_cold())
+        store.save(eeng.torus, eleg_path)
+        ec = LivingCenter(eeng, history=[])
+        ec.mind_store = eleg_path
+        ec.max_nodes_soft_cap = 12
+        ec.think(20)
+        names = [n.name for n in eeng.torus.nodes.values()]
+        dupes = len(names) - len({normalize(x) for x in names})
+        try:
+            eeng.assert_no_orphans()
+            eleg_dual = eeng.answer("hot")
+            eleg_dual_ok = bool(eleg_dual.cause_paths and eleg_dual.effect_paths)
+        except Exception as exc:  # noqa: BLE001
+            eleg_dual_ok = False
+            eleg_err = str(exc)
+        else:
+            eleg_err = ""
+        i4_ok = (
+            len(eeng.torus.nodes) <= ec.max_nodes_soft_cap + 4
+            and dupes == 0
+            and eleg_dual_ok
+        )
+        gate(
+            "I4",
+            "Equal-in/out elegance (no duplicate explosion under think)",
+            i4_ok,
+            f"nodes={len(eeng.torus.nodes)} soft_cap={ec.max_nodes_soft_cap} "
+            f"dupes={dupes} dual_ok={eleg_dual_ok or eleg_err}",
+        )
+
+        # I6 — Center = median navigator: acts originate in Living Center with log
+        nav_path = root / "navigator.json"
+        neng = Engine(seed_minimal_hot_cold())
+        store.save(neng.torus, nav_path)
+        nc = LivingCenter(neng, history=[])
+        nc.mind_store = nav_path
+        nav_reports = nc.think(3)
+        store.append_activity([r.to_dict() for r in nav_reports], nav_path)
+        activity = store.load_activity(nav_path)
+        act_names = sorted(
+            {
+                a.get("act")
+                for row in activity
+                for a in (row.get("acts") or [])
+                if isinstance(a, dict)
+            }
+        )
+        i6_ok = (
+            len(nav_reports) >= 1
+            and len(activity) >= 1
+            and "grow" in act_names
+            and any(
+                a in act_names
+                for a in ("metacognize", "repair_orphans", "score", "grow")
+            )
+        )
+        gate(
+            "I6",
+            "Center = median navigator (persisted Living Center acts)",
+            i6_ok,
+            f"cycles={len(nav_reports)} activity_rows={len(activity)} acts={act_names}",
         )
 
         # Open invention (bar §1): topology bridge/re-parent — not motif digests alone
@@ -562,6 +664,26 @@ def run_verification() -> dict[str, Any]:
         sc2.metacognize()
         board = goals_mod.load_goals(self_path)
         novel_acts = goals_mod.novel_act_kinds(board)
+        search_acts = [a for a in novel_acts if str(a).startswith("search_act_")]
+        search_goals_with_tree = [
+            g
+            for g in board.goals
+            if not g.abandoned
+            and str(g.act_kind).startswith("search_act_")
+            and isinstance(g.tree, dict)
+        ]
+        goal_hints = goals_mod.goals_to_strategy_hints(
+            board,
+            signals={
+                "fruitful": 2.0,
+                "stalled": 1.0,
+                "flags": 1.0,
+                "abandoned_count": float(len(abandoned)),
+            },
+        )
+        from . import substrate as _sub_chk
+
+        search_live = _sub_chk.is_active() and _sub_chk.substrate_impl_name() == "search"
         goals_ok = (
             goals_mod.goals_path(self_path).exists()
             and board.revisions >= 1
@@ -572,6 +694,14 @@ def run_verification() -> dict[str, Any]:
                 or bool(sc2.strategy.active_goals)
             )
         )
+        # Under search: require executed search_act_* ASTs (G2/G7), not only closed menu.
+        if search_live:
+            goals_ok = (
+                goals_ok
+                and len(search_acts) >= 1
+                and len(search_goals_with_tree) >= 1
+                and int(goal_hints.get("goal_search_applied") or 0) >= 1
+            )
         abandon_ok = (
             len(abandoned) >= 1
             and (
@@ -587,7 +717,9 @@ def run_verification() -> dict[str, Any]:
             (
                 f"invented={self_invented} nurtured={self_nurtured} "
                 f"abandoned={[c.instance for c in abandoned][:3]} "
-                f"novel_acts={novel_acts[:4]} "
+                f"novel_acts={novel_acts[:4]} search_acts={search_acts[:3]} "
+                f"search_trees={len(search_goals_with_tree)} "
+                f"search_applied={goal_hints.get('goal_search_applied')} "
                 f"goal_revisions={board.revisions} "
                 f"strategy_goals={len(sc2.strategy.active_goals or [])} "
                 f"boosted={len(unused_boosted)} "
@@ -647,6 +779,16 @@ def run_verification() -> dict[str, Any]:
                 and _prim_spec_ok(prog.primitives[k])
                 for k in proposed_prims
             )
+            op_ast_prims = [
+                k
+                for k, s in prog.primitives.items()
+                if isinstance(s, dict) and s.get("kind") == "op_ast"
+            ]
+            from . import substrate as _sub_form
+
+            search_form = (
+                _sub_form.is_active() and _sub_form.substrate_impl_name() == "search"
+            )
             form_ok = (
                 bool(caps)
                 and entry == "interpret_program"
@@ -669,11 +811,13 @@ def run_verification() -> dict[str, Any]:
                 and prim_specs_ok
                 and set(proposed_prims).issubset(set(result.get("primitives") or []))
                 and not template_like
+                and (not search_form or len(op_ast_prims) >= 1)
             )
             form_ev = (
                 f"entry={caps[0]} program={prog.program_id} "
                 f"ops={result.get('ops')} "
                 f"primitives={sorted(prog.primitives)} "
+                f"op_ast={op_ast_prims} "
                 f"prim_revisions={prog.primitive_revisions} "
                 f"macros={sorted(prog.macros)} "
                 f"other_program={prog2.program_id} "
@@ -705,6 +849,7 @@ def run_verification() -> dict[str, Any]:
         sub_status.get("enabled")
         and sub_status.get("active")
         and sub_status.get("implementation") == "search"
+        and int(sub_status.get("consult_error_count") or 0) == 0
     )
     sub_ok = sub_null_ok or sub_search_ok
     gate(
@@ -715,7 +860,8 @@ def run_verification() -> dict[str, Any]:
             f"flag={sub_status['flag']} enabled={sub_status['enabled']} "
             f"active={sub_status['active']} impl={sub_status['implementation']} "
             f"accepts_non_stdlib={len(sub_status['accepted_non_stdlib'])} "
-            f"rejects={sub_status['rejects']}"
+            f"rejects={sub_status['rejects']} "
+            f"consult_errors={sub_status.get('consult_error_count', 0)}"
         ),
     )
 
@@ -735,7 +881,10 @@ def run_verification() -> dict[str, Any]:
         "C6s",
         "I1",
         "I2",
+        "I3",
+        "I4",
         "I5",
+        "I6",
         "SUB",
     ]
     by_id = {g["id"]: g for g in gates}

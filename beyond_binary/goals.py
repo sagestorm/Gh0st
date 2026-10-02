@@ -44,9 +44,11 @@ class Goal:
     priority: float = 1.0
     abandoned: bool = False
     origin: str = "outcome"
+    # SearchSubstrate act_ast body — required for search_act_* to steer strategy.
+    tree: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        row = {
             "goal_id": self.goal_id,
             "act_kind": self.act_kind,
             "target": self.target,
@@ -55,9 +57,13 @@ class Goal:
             "abandoned": self.abandoned,
             "origin": self.origin,
         }
+        if self.tree is not None:
+            row["tree"] = dict(self.tree)
+        return row
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Goal":
+        tree = data.get("tree")
         return cls(
             goal_id=str(data.get("goal_id") or f"g-{uuid.uuid4().hex[:8]}"),
             act_kind=str(data.get("act_kind", "prefer_invent")),
@@ -66,6 +72,7 @@ class Goal:
             priority=float(data.get("priority", 1.0) or 1.0),
             abandoned=bool(data.get("abandoned", False)),
             origin=str(data.get("origin", "outcome")),
+            tree=dict(tree) if isinstance(tree, dict) else None,
         )
 
 
@@ -246,12 +253,23 @@ def form_goals_from_outcomes(
             act = str(row.get("act_kind", ""))
             if not act or act in SEED_GOAL_ACTS:
                 continue
-            if any(g.act_kind == act and not g.abandoned for g in board.goals):
+            existing = next(
+                (g for g in board.goals if g.act_kind == act and not g.abandoned),
+                None,
+            )
+            if existing is not None:
+                tree = row.get("tree")
+                if existing.tree is None and isinstance(tree, dict):
+                    existing.tree = dict(tree)
+                    board.revisions += 1
                 continue
             board.goals.append(Goal.from_dict(row))
             board.revisions += 1
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # G6: do not swallow substrate failures silently.
+        from . import substrate as _sub
+
+        _sub.record_consult_error("goal", exc)
 
     return board
 
@@ -273,18 +291,48 @@ def novel_act_kinds(board: GoalBoard) -> list[str]:
     )
 
 
-def goals_to_strategy_hints(board: GoalBoard) -> dict[str, Any]:
-    """Translate active goals into strategy extras (beyond want_invent/nurture)."""
+def goals_to_strategy_hints(
+    board: GoalBoard,
+    *,
+    signals: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Translate active goals into strategy extras (beyond want_invent/nurture).
+
+    Closed outcome acts keep their fixed mappings. Search-minted ``search_act_*``
+    goals apply persisted act_ast trees (otherwise they are islands — accepted
+    but inert).
+    """
     active = active_goals(board)
     novel = novel_act_kinds(board)
     want_invent = False
     want_nurture = False
     invent_prefer_source = ""
     suppress_invent = False
+    search_applied = 0
+    channel_bias: dict[str, float] = {}
+    sig = dict(signals or {})
+
     for g in active:
+        if g.act_kind.startswith("search_act_") and g.tree:
+            from . import search_substrate as search_mod
+
+            deltas = search_mod.apply_goal_ast(g.tree, sig)
+            search_applied += 1
+            if deltas.get("want_invent"):
+                want_invent = True
+            if deltas.get("want_nurture"):
+                want_nurture = True
+            if deltas.get("suppress_invent"):
+                suppress_invent = True
+            prefer = str(deltas.get("invent_prefer_source") or "")
+            if prefer:
+                invent_prefer_source = prefer
+            for ch, amount in (deltas.get("channel_bias") or {}).items():
+                channel_bias[ch] = channel_bias.get(ch, 0.0) + float(amount)
+            continue
         if g.act_kind == "seek_topology_bridge":
             want_invent = True
-            invent_prefer_source = "topology"
+            invent_prefer_source = invent_prefer_source or "topology"
         elif g.act_kind == "retire_invent_pressure":
             suppress_invent = True
         elif g.act_kind == "deepen_nurture_lineage":
@@ -293,6 +341,14 @@ def goals_to_strategy_hints(board: GoalBoard) -> dict[str, Any]:
             want_invent = True  # invent path still grows bodies/forms
     if suppress_invent:
         want_invent = False
+    # Channel bias from search ASTs can also flip want flags.
+    if channel_bias.get("invent", 0) > 0 or channel_bias.get("prefer_invent", 0) > 0:
+        if not suppress_invent:
+            want_invent = True
+    if channel_bias.get("nurture", 0) > 0 or channel_bias.get("prefer_nurture", 0) > 0:
+        want_nurture = True
+    if channel_bias.get("migrate", 0) > 0 and not invent_prefer_source:
+        invent_prefer_source = invent_prefer_source or "search"
     return {
         "active_goals": [g.to_dict() for g in active[:8]],
         "novel_act_kinds": novel,
@@ -301,4 +357,6 @@ def goals_to_strategy_hints(board: GoalBoard) -> dict[str, Any]:
         "goal_invent_prefer_source": invent_prefer_source,
         "goal_suppress_invent": suppress_invent,
         "goal_revisions": board.revisions,
+        "goal_search_applied": search_applied,
+        "goal_channel_bias": channel_bias,
     }

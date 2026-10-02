@@ -748,8 +748,10 @@ def evolve_program(program: CapProgram, eng: Engine) -> CapProgram:
                 if into:
                     _ensure_emit_field(program, into)
                 program.revisions += 1
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        from . import substrate as _sub
+
+        _sub.record_consult_error("form", exc)
     return program
 
 

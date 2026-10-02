@@ -765,6 +765,119 @@ class SubstrateInterfaceTests(unittest.TestCase):
             )
         self.assertTrue(substrate_mod.all_axes_have_non_stdlib_accepts())
 
+    def test_search_goal_ast_steers_strategy_hints(self):
+        """G2: search_act_* trees must change want_invent/nurture — not islands."""
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import goals as goals_mod
+        from beyond_binary.search_substrate import apply_goal_ast
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        deepen = {
+            "op": "seq",
+            "acts": [
+                {"op": "bias", "channel": "invent", "delta": 0.35},
+                {
+                    "op": "when",
+                    "cond": {"op": "gte", "sig": "fruitful", "v": 1},
+                    "then": {"op": "bias", "channel": "nurture", "delta": 0.3},
+                },
+            ],
+        }
+        deltas = apply_goal_ast(deepen, {"fruitful": 2.0, "stalled": 0.0, "flags": 0.0})
+        self.assertTrue(deltas["want_invent"])
+        self.assertTrue(deltas["want_nurture"])
+
+        board = goals_mod.GoalBoard(
+            goals=[
+                goals_mod.Goal(
+                    goal_id="sg-test",
+                    act_kind="search_act_deepen_deadbeef",
+                    target="structure",
+                    reason="search:outcome:fruitful=2",
+                    priority=1.3,
+                    origin="search-substrate",
+                    tree=deepen,
+                )
+            ],
+            revisions=1,
+        )
+        hints = goals_mod.goals_to_strategy_hints(
+            board, signals={"fruitful": 2.0, "stalled": 0.0, "flags": 0.0}
+        )
+        self.assertTrue(hints["goal_want_invent"])
+        self.assertTrue(hints["goal_want_nurture"])
+        self.assertGreaterEqual(hints["goal_search_applied"], 1)
+        # Without tree → island stays inert for search-only board.
+        bare = goals_mod.GoalBoard(
+            goals=[
+                goals_mod.Goal(
+                    goal_id="sg-bare",
+                    act_kind="search_act_deepen_deadbeef",
+                    target="structure",
+                    reason="no-tree",
+                    origin="search-substrate",
+                )
+            ]
+        )
+        bare_hints = goals_mod.goals_to_strategy_hints(bare, signals={"fruitful": 2})
+        self.assertFalse(bare_hints["goal_want_invent"])
+        self.assertEqual(bare_hints["goal_search_applied"], 0)
+
+    def test_search_reflect_expr_ast_wires_firing_rules(self):
+        """G3: accepted expr_ast conditions become enabled MetaRules that fire."""
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import policy as policy_mod
+        from beyond_binary.journal import JournalEntry
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        pol = policy_mod.MetaPolicy()
+        entries = [
+            JournalEntry(
+                cycle=i,
+                reflection="growth_fruitful" if i % 2 == 0 else "growth_stalled",
+                signals={
+                    "flags": 0 if i % 2 == 0 else 1,
+                    "grow_count": 1,
+                    "node_delta": 2 if i % 2 == 0 else 0,
+                },
+                strategy_hint="grow",
+            )
+            for i in range(4)
+        ]
+        pol = policy_mod.revise_kinds_from_outcomes(pol, entries)
+        expr_names = [
+            n
+            for n, s in pol.condition_kinds.items()
+            if isinstance(s, dict) and s.get("kind") == "expr_ast"
+        ]
+        self.assertTrue(expr_names, msg="expected search expr_ast conditions")
+        wired = [
+            r
+            for r in pol.rules
+            if r.enabled and r.when in expr_names and r.origin == "search-substrate"
+        ]
+        self.assertTrue(wired, msg="expr_ast must have firing rules")
+        strat = policy_mod.strategy_from_policy(pol, journal_entries=entries)
+        self.assertTrue(
+            strat.get("expr_kinds") or any(r.rule_id in (strat.get("active_rules") or []) for r in wired),
+            msg=f"strategy={strat}",
+        )
+
+    def test_consult_error_is_recorded_not_swallowed(self):
+        """G6: caller-path consult failures hit reject/error logs."""
+        from beyond_binary import substrate as substrate_mod
+
+        substrate_mod.reset_logs_for_tests()
+        substrate_mod.record_consult_error("invent", RuntimeError("boom"))
+        st = substrate_mod.status()
+        self.assertEqual(st["consult_error_count"], 1)
+        self.assertEqual(st["consult_errors"][0]["axis"], "invent")
+        self.assertGreaterEqual(st["rejects"], 1)
+
 
 class VerifyFarVisionTests(unittest.TestCase):
     def test_verify_reports_incomplete_sentience(self):

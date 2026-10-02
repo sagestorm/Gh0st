@@ -249,17 +249,75 @@ class LivingCenter:
                     board, journal_rows, invent_summary=invent_targets
                 )
                 goals_mod.save_goals(board, self.mind_store)
-                goal_hints = goals_mod.goals_to_strategy_hints(board)
-                # Register novel goal acts as policy action kinds (open menu).
+                # Compact journal signals so search act ASTs can evaluate `when`.
+                goal_signals: dict[str, float] = {
+                    "fruitful": float(
+                        sum(
+                            1
+                            for e in journal_rows
+                            if getattr(e, "reflection", None) == "growth_fruitful"
+                            or (
+                                isinstance(e, dict)
+                                and e.get("reflection") == "growth_fruitful"
+                            )
+                        )
+                    ),
+                    "stalled": float(
+                        sum(
+                            1
+                            for e in journal_rows
+                            if getattr(e, "reflection", None) == "growth_stalled"
+                            or (
+                                isinstance(e, dict)
+                                and e.get("reflection") == "growth_stalled"
+                            )
+                        )
+                    ),
+                    "flags": float(
+                        sum(
+                            int(
+                                (
+                                    getattr(e, "signals", None)
+                                    or (e.get("signals") if isinstance(e, dict) else {})
+                                    or {}
+                                ).get("flags", 0)
+                                or 0
+                            )
+                            for e in journal_rows
+                        )
+                    ),
+                    "abandoned_count": float(
+                        invent_targets.get("abandoned_count") or 0
+                    ),
+                }
+                if invent_targets.get("prefer_source"):
+                    goal_signals["prefer_source"] = 1.0
+                goal_hints = goals_mod.goals_to_strategy_hints(
+                    board, signals=goal_signals
+                )
+                # Register novel goal acts as policy action kinds (include AST tree).
+                by_act = {
+                    g.act_kind: g
+                    for g in board.goals
+                    if not g.abandoned
+                }
                 for act in goal_hints.get("novel_act_kinds") or []:
+                    g = by_act.get(act)
+                    definition: dict[str, Any] = {
+                        "kind": "goal_act",
+                        "act": act,
+                        "origin": (
+                            "search-substrate"
+                            if act.startswith("search_act_")
+                            else "outcome-goal"
+                        ),
+                    }
+                    if g is not None and g.tree is not None:
+                        definition["tree"] = dict(g.tree)
                     policy_mod.register_action_kind(
                         pol,
                         name=f"goal_{act}",
-                        definition={
-                            "kind": "goal_act",
-                            "act": act,
-                            "origin": "outcome-goal",
-                        },
+                        definition=definition,
                     )
             except Exception:  # noqa: BLE001
                 invent_targets = {}

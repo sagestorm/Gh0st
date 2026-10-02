@@ -304,6 +304,69 @@ def register_action_kind(
     return name
 
 
+def _wire_search_reflect_rules(
+    policy: MetaPolicy, vec: dict[str, float]
+) -> int:
+    """G3: attach enabled MetaRules that fire on search ``expr_ast`` conditions.
+
+    Without this, accepted reflect proposals sit unused beside meta_prim menus.
+    Returns number of new rules added.
+    """
+    added = 0
+    existing = {(r.when, r.then) for r in policy.rules if r.enabled}
+    stalled = float(vec.get("stalled", 0.0) or 0.0)
+    flags = float(vec.get("flags", 0.0) or 0.0)
+    for name, spec in list(policy.condition_kinds.items()):
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("kind") != "expr_ast":
+            continue
+        if not str(name).startswith("search_refl_"):
+            continue
+        # Choose action by empirical pressure: flags/stall → migrate/prune,
+        # otherwise invent (open-mind growth).
+        if flags >= 1:
+            aname = f"act_search_prune_{name[-8:]}"
+            action = {
+                "kind": "bias",
+                "channel": "prefer_prune",
+                "amount": 1.2,
+                "origin": "search-substrate",
+            }
+        elif stalled >= 1:
+            aname = f"act_search_migrate_{name[-8:]}"
+            action = {
+                "kind": "bias",
+                "channel": "prefer_migrate",
+                "amount": 1.1,
+                "origin": "search-substrate",
+            }
+        else:
+            aname = f"act_search_invent_{name[-8:]}"
+            action = {
+                "kind": "bias",
+                "channel": "prefer_invent",
+                "amount": 1.3,
+                "origin": "search-substrate",
+            }
+        register_action_kind(policy, name=aname, definition=action)
+        if (name, aname) in existing:
+            continue
+        policy.rules.append(
+            MetaRule(
+                f"r-search-{uuid.uuid4().hex[:6]}",
+                name,
+                aname,
+                strength=1.25,
+                origin="search-substrate",
+            )
+        )
+        policy.rule_revisions += 1
+        existing.add((name, aname))
+        added += 1
+    return added
+
+
 def _eval_expr(spec: dict[str, Any], vec: dict[str, float]) -> bool:
     weights = spec.get("weights") or {}
     threshold = float(spec.get("threshold", 0.0))
@@ -661,8 +724,12 @@ def revise_kinds_from_outcomes(
                 k: v for k, v in row.items() if k != "name"
             }
             policy.kind_revisions += 1
-    except Exception:  # noqa: BLE001
-        pass
+        # G3: wire search expr_ast conditions into enabled firing rules.
+        _wire_search_reflect_rules(policy, vec)
+    except Exception as exc:  # noqa: BLE001
+        from . import substrate as _sub
+
+        _sub.record_consult_error("reflect", exc)
 
     fruitful = float(vec.get("fruitful", 0.0))
     stalled = float(vec.get("stalled", 0.0))
@@ -1058,7 +1125,28 @@ def _apply_action(
         )
     elif kind == "goal_act":
         act = str(spec.get("act", ""))
-        if act == "seek_topology_bridge":
+        tree = spec.get("tree")
+        if isinstance(tree, dict) and str(act).startswith("search_act_"):
+            from . import search_substrate as search_mod
+
+            deltas = search_mod.apply_goal_ast(tree, vec or {})
+            bias = deltas.get("channel_bias") or {}
+            for ch, amount in bias.items():
+                raw = str(ch)
+                key = raw if raw.startswith("prefer_") else f"prefer_{raw}"
+                scores[key] = scores.get(key, 0.0) + float(amount) * strength
+            if deltas.get("want_invent"):
+                scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + strength
+            if deltas.get("want_nurture"):
+                scores["prefer_nurture"] = scores.get("prefer_nurture", 0.0) + strength
+            if deltas.get("suppress_invent"):
+                scores["prefer_invent"] = max(
+                    0.0, scores.get("prefer_invent", 0.0) - strength
+                )
+            prefer = str(deltas.get("invent_prefer_source") or "")
+            if prefer:
+                extras["invent_prefer_source"] = prefer
+        elif act == "seek_topology_bridge":
             scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + strength
             extras["invent_prefer_source"] = "topology"
         elif act == "retire_invent_pressure":
@@ -1069,6 +1157,9 @@ def _apply_action(
             scores["prefer_nurture"] = scores.get("prefer_nurture", 0.0) + strength
         elif act == "propose_body_primitive":
             scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + 0.5 * strength
+        elif str(act).startswith("search_act_"):
+            # Search act without tree — still count as invent pressure (weak).
+            scores["prefer_invent"] = scores.get("prefer_invent", 0.0) + 0.4 * strength
     elif kind == "bias":
         channel = str(spec.get("channel", "prefer_invent"))
         amount = float(spec.get("amount", 1.0)) * strength
@@ -1142,6 +1233,9 @@ def strategy_from_policy(
                     meta_isa_fired = True
             if cspec.get("kind") == "expr" or aspec.get("origin") == "learned-expr":
                 expr_kind_fired = True
+            if cspec.get("kind") == "expr_ast" or aspec.get("origin") == "search-substrate":
+                expr_kind_fired = True
+                novel_kind_fired = True
         _apply_action(rule.then, policy, scores, rule.strength, extras, vec=vec)
         fired.append(rule.rule_id)
 
@@ -1160,6 +1254,8 @@ def strategy_from_policy(
         scores["prefer_nurture"] += 0.3
     if prefer_source == "topology":
         scores["prefer_invent"] += 0.6
+    elif prefer_source == "search":
+        scores["prefer_invent"] += 0.7
 
     gh = goal_hints or {}
     if gh.get("goal_suppress_invent"):
@@ -1172,6 +1268,15 @@ def strategy_from_policy(
         prefer_source = str(gh["goal_invent_prefer_source"]) or prefer_source
         if prefer_source == "topology":
             scores["prefer_invent"] += 0.4
+        elif prefer_source == "search":
+            scores["prefer_invent"] += 0.5
+    # Apply channel bias from executed search act ASTs (G2 bridge).
+    for ch, amount in (gh.get("goal_channel_bias") or {}).items():
+        raw = str(ch)
+        key = raw if raw.startswith("prefer_") else f"prefer_{raw}"
+        scores[key] = scores.get(key, 0.0) + float(amount or 0)
+    if extras.get("invent_prefer_source"):
+        prefer_source = str(extras["invent_prefer_source"]) or prefer_source
 
     actionable = {k: v for k, v in scores.items() if k != "suppress_grow"}
     dominant = max(actionable, key=actionable.get)

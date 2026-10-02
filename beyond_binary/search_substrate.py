@@ -604,6 +604,102 @@ def eval_goal_ast_ok(tree: Any) -> bool:
     return False
 
 
+def _eval_goal_cond(node: Any, signals: dict[str, float]) -> bool:
+    """Evaluate compact goal-condition nodes (``{op,sig,v}`` / and/or)."""
+    if not isinstance(node, dict):
+        return False
+    op = str(node.get("op", ""))
+    if op in {"and", "or"}:
+        args = node.get("args") or []
+        if not isinstance(args, list) or not args:
+            return False
+        vals = [_eval_goal_cond(a, signals) for a in args]
+        return all(vals) if op == "and" else any(vals)
+    if op == "not":
+        return not _eval_goal_cond(node.get("arg"), signals)
+    sig = str(node.get("sig", "") or "")
+    actual = float(signals.get(sig, 0.0) or 0.0)
+    thresh = float(node.get("v", 0) or 0)
+    if op == "gte":
+        return actual >= thresh
+    if op == "gt":
+        return actual > thresh
+    if op == "lt":
+        return actual < thresh
+    if op == "lte":
+        return actual <= thresh
+    if op == "eq":
+        return actual == thresh
+    return False
+
+
+def apply_goal_ast(
+    tree: Any, signals: dict[str, float] | None = None
+) -> dict[str, Any]:
+    """Interpret a search act AST into strategy deltas (bar §3 bridge).
+
+    Returns keys: want_invent, want_nurture, suppress_invent,
+    invent_prefer_source, channel_bias.
+    """
+    out: dict[str, Any] = {
+        "want_invent": False,
+        "want_nurture": False,
+        "suppress_invent": False,
+        "invent_prefer_source": "",
+        "channel_bias": {},
+    }
+    if not isinstance(tree, dict):
+        return out
+    sig = dict(signals or {})
+
+    def _bias(channel: str, delta: float) -> None:
+        ch = str(channel or "")
+        if not ch:
+            return
+        bias: dict[str, float] = out["channel_bias"]
+        bias[ch] = bias.get(ch, 0.0) + float(delta)
+        if ch in {"invent", "prefer_invent"} and delta > 0:
+            out["want_invent"] = True
+        if ch in {"nurture", "prefer_nurture"} and delta > 0:
+            out["want_nurture"] = True
+        if ch in {"migrate", "prefer_migrate"} and delta > 0 and not out["invent_prefer_source"]:
+            out["invent_prefer_source"] = "search"
+
+    def _apply(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        op = str(node.get("op", ""))
+        if op == "bias":
+            _bias(str(node.get("channel", "")), float(node.get("delta", 0) or 0))
+            return
+        if op == "prefer_source":
+            hint = str(node.get("source_hint") or "search")
+            out["invent_prefer_source"] = hint
+            out["want_invent"] = True
+            if node.get("abandon_menu"):
+                # Prefer open search over closed invent-menu pressure.
+                out["want_invent"] = True
+            return
+        if op == "explore":
+            weights = dict(node.get("weights") or {})
+            for ch, w in weights.items():
+                _bias(str(ch), float(w or 0))
+            return
+        if op == "when":
+            cond = node.get("cond")
+            branch = node.get("then") if _eval_goal_cond(cond, sig) else node.get("else")
+            if isinstance(branch, dict):
+                _apply(branch)
+            return
+        if op == "seq":
+            for act in node.get("acts") or []:
+                _apply(act)
+            return
+
+    _apply(tree)
+    return out
+
+
 # ---- Form: CapProgram op ASTs beyond closed prim-spec kinds ----
 
 _OP_AST_STEPS = frozenset(
@@ -654,8 +750,28 @@ def run_op_ast(eng: Engine, body: list[dict[str, Any]]) -> dict[str, float] | No
                         return None
                 lists[dest] = vals
             elif op == "map_attr":
-                # Alias of foreach for alternate naming in searched ASTs.
-                return None  # unused; foreach covers map
+                # Alias of foreach_dual for alternate naming in searched ASTs.
+                dest = str(step.get("into_list", "duals"))
+                attr = str(step.get("attr", "depth"))
+                vals: list[float] = []
+                for node in eng.torus.nodes.values():
+                    if node.hemisphere is not Hemisphere.CAUSE or not node.opposite:
+                        continue
+                    if attr == "depth":
+                        try:
+                            vals.append(float(len(eng.path_to_root(node.name)) - 1))
+                        except Exception:  # noqa: BLE001
+                            vals.append(0.0)
+                    elif attr == "child_count":
+                        vals.append(float(len(eng.children(node.name))))
+                    elif attr == "path_len":
+                        try:
+                            vals.append(float(len(eng.path_to_root(node.name))))
+                        except Exception:  # noqa: BLE001
+                            vals.append(0.0)
+                    else:
+                        return None
+                lists[dest] = vals
             elif op == "filter_gt":
                 src = str(step.get("from_list", ""))
                 dest = str(step.get("into_list", src))
@@ -970,6 +1086,7 @@ class SearchSubstrate:
             board = getattr(center, "_search_goal_board", None) if center else None
             from .goals import Goal
 
+            tree = payload.get("tree")
             goal = Goal(
                 goal_id=f"sg-{proposal.proposal_id[-6:]}",
                 act_kind=str(payload.get("act_kind")),
@@ -977,10 +1094,31 @@ class SearchSubstrate:
                 reason=str(payload.get("reason", "search-substrate")),
                 priority=float(payload.get("priority", 1.0) or 1.0),
                 origin="search-substrate",
+                tree=dict(tree) if isinstance(tree, dict) else None,
             )
             if board is not None:
-                board.goals.append(goal)
-                board.revisions += 1
+                # Dedupe by act_kind — keep highest priority + ensure tree persists.
+                existing = next(
+                    (
+                        g
+                        for g in board.goals
+                        if g.act_kind == goal.act_kind and not g.abandoned
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    if goal.priority >= existing.priority:
+                        existing.priority = goal.priority
+                        existing.reason = goal.reason
+                        existing.target = goal.target
+                        if goal.tree is not None:
+                            existing.tree = dict(goal.tree)
+                    elif existing.tree is None and goal.tree is not None:
+                        existing.tree = dict(goal.tree)
+                    board.revisions += 1
+                else:
+                    board.goals.append(goal)
+                    board.revisions += 1
             else:
                 _PENDING_GOALS.append(goal.to_dict())
             return f"search-goal-{goal.act_kind}"
