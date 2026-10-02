@@ -1395,5 +1395,90 @@ class ReadableSearchInventGateTests(unittest.TestCase):
                 )
 
 
+class ProductScoreboardTests(unittest.TestCase):
+    """#3: honest Null-vs-search product scoreboard (verify adjunct + CLI)."""
+
+    def test_run_scoreboard_meet_or_exceed(self):
+        from beyond_binary import product_scoreboard as sb
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertEqual(report["regressions"], [])
+        self.assertEqual(report["search"]["digest_node_count"], 0)
+        self.assertEqual(report["search"]["answer_path_digests"], 0)
+        self.assertGreaterEqual(
+            report["search"]["readable_name_ratio"],
+            report["null"]["readable_name_ratio"],
+        )
+
+    def test_evaluate_flags_digest_regression(self):
+        from beyond_binary import product_scoreboard as sb
+
+        null = {
+            "score": {
+                "dual_coverage": 1.0,
+                "link_symmetry": 1.0,
+                "unused_path_cost": 0.0,
+                "node_count": 10,
+            },
+            "readable_name_ratio": 1.0,
+            "answer_path_digests": 0,
+            "digest_node_count": 0,
+            "probes": {"water": {"answerable": True, "path_digests": 0}},
+        }
+        bad = {
+            "score": {
+                "dual_coverage": 1.0,
+                "link_symmetry": 1.0,
+                "unused_path_cost": 0.0,
+                "node_count": 12,
+            },
+            "readable_name_ratio": 0.5,
+            "answer_path_digests": 2,
+            "digest_node_count": 1,
+            "probes": {"water": {"answerable": True, "path_digests": 2}},
+        }
+        ok, regs = sb.evaluate_meet_or_exceed(null, bad, probes=("water",))
+        self.assertFalse(ok)
+        self.assertTrue(any("digest" in r or "readable" in r for r in regs))
+
+    def test_verify_includes_p1_gate(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import verify
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
+        report = verify.run_verification()
+        by_id = {g["id"]: g for g in report["gates"]}
+        self.assertIn("P1", by_id)
+        self.assertTrue(by_id["P1"]["ok"], msg=by_id["P1"]["evidence"])
+        self.assertIn("product_scoreboard", report)
+        self.assertTrue(report["product_scoreboard"].get("meet_or_exceed"))
+        # Default still fail-closed on SENTIENCE / complete.
+        self.assertFalse(report["complete"])
+        self.assertFalse(by_id["SENTIENCE"]["ok"])
+
+    def test_scoreboard_preserves_ambient_substrate_logs(self):
+        import os
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
+        substrate_mod._ACCEPT_LOG.append(
+            {
+                "axis": "invent",
+                "provenance": "search-substrate:invent:sentinel",
+                "accepted": True,
+            }
+        )
+        before = substrate_mod.snapshot_logs()
+        sb.run_scoreboard()
+        after = substrate_mod.snapshot_logs()
+        self.assertEqual(before, after)
+        substrate_mod.reset_logs_for_tests()
+
+
 if __name__ == "__main__":
     unittest.main()

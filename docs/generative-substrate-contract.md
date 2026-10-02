@@ -27,7 +27,8 @@ A pluggable **proposal source** the Living Center consults on four axes: `invent
 | G13 | Search-first goals; closed outcome menu not used on live search path |
 | G9 | invent/form consult without resolvable engine rejects on live path |
 | SENTIENCE | false by default; true under search when all four axes have `search-substrate:*` accepts (see `docs/sentience-evidence-bar.md` Operational section) |
-| `report.complete` (G1) | false default; true under search when eng + SENTIENCE + required I/C/SUB/G9 checklist pass |
+| `report.complete` (G1) | false default; true under search when eng + SENTIENCE + required I/C/SUB/G9/P1 checklist pass |
+| Product bar (P1) | Search invent accepts must **meet or exceed** Null on dual_coverage, link_symmetry, unused_path_cost, readable-name ratio, and probe answer paths (`water`/`boiling`/`warm`). Opaque `sw*`/`sc*` poles are forbidden as user-facing labels. CLI: `product-scoreboard`. |
 
 ### Interface sketch
 
