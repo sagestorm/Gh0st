@@ -308,7 +308,8 @@ def embody(
     center = LivingCenter(body_eng)
     center.mind_store = body_path
     center.sync_cycle_index(store.load_activity(body_path))
-    reports = center.think(3)
+    # Embody warm-up is not the primary invent path (#2).
+    reports = center.think(3, allow_primary_invent=False)
     store.save(body_eng.torus, body_path)
     store.append_activity([r.to_dict() for r in reports], body_path)
 
