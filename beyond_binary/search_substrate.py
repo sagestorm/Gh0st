@@ -402,10 +402,12 @@ def search_invent_asts(
     ]
     out: list[dict[str, Any]] = []
 
-    # #6: prefer wedge sites off the thermal probe answer spine so invent
-    # does not lengthen water/boiling/warm paths by default.
+    # #6/#7: prefer wedge sites off measured product-probe spines so invent
+    # does not lengthen water/boiling/warm/steam/absence/bright paths by default.
+    from . import invent as invent_mod
+
     probe_spine: set[str] = set()
-    for topic in ("water", "boiling", "warm"):
+    for topic in invent_mod.PRODUCT_PROBES:
         if not eng.exists(topic):
             continue
         try:
