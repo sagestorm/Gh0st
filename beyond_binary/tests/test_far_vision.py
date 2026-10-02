@@ -658,6 +658,7 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertFalse(report["complete"])
         by_id = {g["id"]: g for g in report["gates"]}
         self.assertFalse(by_id["SENTIENCE"]["ok"])
+        self.assertIn("HARD PLATEAU", by_id["SENTIENCE"]["evidence"])
         self.assertTrue(by_id["I1"]["ok"])
         self.assertTrue(by_id["I5"]["ok"])
         self.assertTrue(by_id["C4e"]["ok"])

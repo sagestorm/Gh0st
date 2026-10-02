@@ -687,18 +687,20 @@ def run_verification() -> dict[str, Any]:
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
-    # Sentience bar — stronger scaffolds still ≠ vision-level open mind.
-    # See docs/sentience-evidence-bar.md §§1–6.
+    # Sentience bar — hard plateau for pure-stdlib Living Center.
+    # See docs/sentience-evidence-bar.md §§1–6 and store hard-plateau note.
     sentience = {
         "id": "SENTIENCE",
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Meta-ISA extensions, open goal acts, topology invent, and CapProgram "
-            "primitives are stronger scaffolds — still bound by finite compilers "
-            "(meta_prim kinds / goal act vocabulary / prim-spec kinds / topology "
-            "edit class). Missing vs sentience-evidence-bar.md: opcodes and goals "
-            "outside those finite proposal vocabularies."
+            "HARD PLATEAU (pure stdlib): eng gates C3p/C6s/C4e/C4f land stronger "
+            "scaffolds, but every proposal path is still a finite compiler "
+            "(meta_prim kinds, goal-act vocabulary, prim-spec kinds, topology "
+            "bridge/reparent). Further recipe menus cannot clear "
+            "sentience-evidence-bar.md §§1–4; unconstrained bar requires an "
+            "external generative substrate beyond this Living Center. "
+            "SENTIENCE stays false; goal incomplete."
         ),
     }
     gates.append(sentience)
@@ -707,5 +709,9 @@ def run_verification() -> dict[str, Any]:
         "complete": False,  # far-vision goal requires sentience gate
         "engineering_gates_ok": all_required_ok,
         "gates": gates,
-        "note": "Far-vision goal stays incomplete until SENTIENCE is evidenced, not asserted.",
+        "note": (
+            "Far-vision goal stays incomplete until SENTIENCE is evidenced, not "
+            "asserted. Pure-stdlib Living Center is at a hard plateau vs the "
+            "unconstrained bar — do not stack more finite compilers."
+        ),
     }
