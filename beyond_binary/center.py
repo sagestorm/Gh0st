@@ -79,6 +79,25 @@ class StructuralScore:
         return self.node_count < other.node_count
 
 
+def max_persisted_cycle(
+    prior_activity: list[dict[str, Any]] | None = None,
+    *,
+    torus_center_log: list[dict[str, Any]] | None = None,
+) -> int:
+    """Highest cycle number already recorded (activity log preferred, then torus)."""
+    highest = 0
+    for row in prior_activity or ():
+        cycle = row.get("cycle")
+        if isinstance(cycle, int) and cycle > highest:
+            highest = cycle
+    # Torus center_log may carry cycle stamps from earlier Living Center runs.
+    for row in torus_center_log or ():
+        cycle = row.get("cycle")
+        if isinstance(cycle, int) and cycle > highest:
+            highest = cycle
+    return highest
+
+
 class LivingCenter:
     """The hole in the torus: decide grow/repair/dedupe/prune from the median."""
 
@@ -88,12 +107,20 @@ class LivingCenter:
         *,
         max_new_pairs_per_cycle: int = MAX_NEW_PAIRS_PER_CYCLE,
         max_nodes_soft_cap: int = MAX_NODES_SOFT_CAP,
+        prior_activity: list[dict[str, Any]] | None = None,
+        start_cycle: int | None = None,
     ):
         self.engine = engine
         self.max_new_pairs_per_cycle = max_new_pairs_per_cycle
         self.max_nodes_soft_cap = max_nodes_soft_cap
-        self._cycle_index = 0
-        self.activity: list[dict[str, Any]] = []
+        if start_cycle is not None:
+            self._cycle_index = max(0, start_cycle)
+        else:
+            self._cycle_index = max_persisted_cycle(
+                prior_activity,
+                torus_center_log=engine.torus.center_log,
+            )
+        self.activity: list[dict[str, Any]] = list(prior_activity or [])
 
     # --- scoring ---------------------------------------------------------
 
@@ -382,7 +409,11 @@ class LivingCenter:
         )
 
     def _act_challenge(self) -> ActRecord:
-        """Refuse/flag one-sided structures (orphans or broken reciprocals)."""
+        """Refuse/flag one-sided structures (orphans or broken reciprocals).
+
+        Never abort the cycle: dangling/orphan topics are recorded as refused
+        flags and are not passed through answer() in a way that raises.
+        """
         flags: list[dict[str, str]] = []
         for node in self.engine.torus.nodes.values():
             if not node.opposite:
@@ -395,14 +426,37 @@ class LivingCenter:
                 flags.append({"node": node.name, "flag": "same_hemisphere_opposite"})
             elif opp.opposite != normalize(node.name):
                 flags.append({"node": node.name, "flag": "asymmetric_link"})
-        topic = flags[0]["node"] if flags else None
-        self.engine.center(CenterAction.CHALLENGE, topic)
+
+        # Prefer a dual-answerable topic for the center stamp; otherwise none.
+        unsafe = {
+            "orphan",
+            "dangling_opposite",
+            "same_hemisphere_opposite",
+            "asymmetric_link",
+        }
+        topic: Optional[str] = None
+        for flag in flags:
+            if flag["flag"] in unsafe:
+                continue
+            topic = flag["node"]
+            break
+        if topic is None and not flags:
+            # Clear challenge — stamp a healthy root when available.
+            for n in self.engine.torus.nodes.values():
+                if n.parent is None and n.opposite:
+                    topic = n.name
+                    break
+
+        payload = self.engine.center(CenterAction.CHALLENGE, topic)
+        refused = payload.get("refused")
         return ActRecord(
             "challenge",
             {
                 "flags": flags,
                 "one_sided": len(flags) > 0,
                 "status": "flagged" if flags else "clear",
+                "refused": refused,
+                "topic": topic,
             },
         )
 

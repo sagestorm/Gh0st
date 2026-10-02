@@ -118,6 +118,71 @@ class ActivityLogTests(unittest.TestCase):
             self.assertIn("dedupe", acts)
             self.assertIn("log", acts)
 
+    def test_cycle_index_continues_across_cli_invokes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "torus.json"
+            store.save(seed_minimal_hot_cold(), path)
+            self.assertEqual(main(["think", "--steps", "2", "--store", str(path)]), 0)
+            rows = store.load_activity(path)
+            self.assertEqual([r["cycle"] for r in rows], [1, 2])
+            self.assertEqual(main(["cycle", "--store", str(path)]), 0)
+            rows = store.load_activity(path)
+            self.assertEqual([r["cycle"] for r in rows], [1, 2, 3])
+            # Fresh LivingCenter from prior activity alone also continues.
+            eng = Engine(store.load(path))
+            center = LivingCenter(eng, prior_activity=rows)
+            report = center.cycle()
+            self.assertEqual(report.cycle, 4)
+
+
+class ChallengeSafetyTests(unittest.TestCase):
+    def test_dangling_opposite_challenge_does_not_abort_cycle(self):
+        eng = Engine(seed_minimal_hot_cold())
+        # Broken link: opposite points at a missing node.
+        eng.get("hot").opposite = "missing-cold"
+        center = LivingCenter(eng)
+        report = center.cycle()
+        acts = [a.act for a in report.acts]
+        self.assertIn("challenge", acts)
+        self.assertIn("prune", acts)
+        self.assertIn("log", acts)
+        # Cycle completed end-to-end (prune/log after challenge).
+        self.assertEqual(acts[-1], "log")
+        self.assertGreater(acts.index("log"), acts.index("challenge"))
+        self.assertGreater(acts.index("prune"), acts.index("challenge"))
+        challenge = next(a for a in report.acts if a.act == "challenge")
+        flags = challenge.detail["flags"]
+        self.assertTrue(
+            any(f["flag"] == "dangling_opposite" for f in flags)
+            or any(f["flag"] == "orphan" for f in flags)
+        )
+        # center() stamp must not have raised; last CHALLENGE entry may refuse.
+        challenge_logs = [
+            e for e in eng.torus.center_log if e.get("action") == "challenge"
+        ]
+        self.assertTrue(challenge_logs)
+
+
+class StoreFlagPlacementTests(unittest.TestCase):
+    def test_store_after_subcommand(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "torus.json"
+            self.assertEqual(
+                main(["seed-minimal", "--force", "--store", str(path)]),
+                0,
+            )
+            self.assertTrue(path.exists())
+            self.assertEqual(main(["show", "--store", str(path)]), 0)
+
+    def test_store_before_subcommand_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "torus.json"
+            self.assertEqual(
+                main(["--store", str(path), "seed-minimal", "--force"]),
+                0,
+            )
+            self.assertTrue(path.exists())
+
 
 class CliThinkSmoke(unittest.TestCase):
     def test_think_show_answer_flow(self):

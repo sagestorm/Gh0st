@@ -322,7 +322,11 @@ class Engine:
     # --- center + answers ------------------------------------------------
 
     def center(self, action: CenterAction, topic: Optional[str] = None) -> dict:
-        """Record a center navigation act; always frames both hemispheres."""
+        """Record a center navigation act; always frames both hemispheres.
+
+        Broken / one-sided topics are refused and recorded — they do not raise,
+        so Living Center cycles can continue to prune/log.
+        """
         payload = {
             "action": action.value,
             "topic": topic,
@@ -338,14 +342,17 @@ class Engine:
             ],
         }
         if topic:
-            # Dual-hemisphere requirement: refuse single-side framing.
-            dual = self.answer(topic)
-            payload["dual"] = {
-                "cause_paths": dual.cause_paths,
-                "effect_paths": dual.effect_paths,
-                "between": dual.between,
-                "note": dual.note,
-            }
+            try:
+                dual = self.answer(topic)
+                payload["dual"] = {
+                    "cause_paths": dual.cause_paths,
+                    "effect_paths": dual.effect_paths,
+                    "between": dual.between,
+                    "note": dual.note,
+                }
+            except (RuleError, KeyError) as exc:
+                payload["dual"] = None
+                payload["refused"] = str(exc)
         self.torus.center_log.append(payload)
         return payload
 

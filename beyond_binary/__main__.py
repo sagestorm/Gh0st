@@ -86,7 +86,8 @@ def cmd_think(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    center = LivingCenter(eng)
+    prior = store.load_activity(target)
+    center = LivingCenter(eng, prior_activity=prior)
     reports = center.think(args.steps)
     store.save(eng.torus, target)
     log_path = store.append_activity([r.to_dict() for r in reports], target)
@@ -216,36 +217,58 @@ def cmd_center(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="beyond_binary",
-        description="Beyond Binary AI — Living Center + dual-hemisphere CLI",
-    )
-    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    p.add_argument(
+    # Top-level --store (before subcommand). Subparsers use SUPPRESS so their
+    # default does not wipe a top-level value when --store is only given first.
+    store_top = argparse.ArgumentParser(add_help=False)
+    store_top.add_argument(
         "--store",
         type=Path,
         default=None,
         help="path to torus JSON (default: data/torus.json)",
     )
+    store_sub = argparse.ArgumentParser(add_help=False)
+    store_sub.add_argument(
+        "--store",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="path to torus JSON (default: data/torus.json)",
+    )
+
+    p = argparse.ArgumentParser(
+        prog="beyond_binary",
+        description="Beyond Binary AI — Living Center + dual-hemisphere CLI",
+        parents=[store_top],
+    )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    init = sub.add_parser("init", help="create empty torus store")
+    init = sub.add_parser(
+        "init",
+        parents=[store_sub],
+        help="create empty torus store",
+    )
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_init)
 
     sm = sub.add_parser(
         "seed-minimal",
+        parents=[store_sub],
         help="minimal hot↔cold poles only (for think growth)",
     )
     sm.add_argument("--force", action="store_true")
     sm.set_defaults(func=cmd_seed_minimal)
 
-    seed = sub.add_parser("seed-hot-cold", help="load full hot/cold cascade instance")
+    seed = sub.add_parser(
+        "seed-hot-cold",
+        parents=[store_sub],
+        help="load full hot/cold cascade instance",
+    )
     seed.add_argument("--force", action="store_true")
     seed.set_defaults(func=cmd_seed)
 
     th = sub.add_parser(
         "think",
+        parents=[store_sub],
         help="run N Living Center cycles (grow/repair/dedupe/prune/log)",
     )
     th.add_argument(
@@ -256,23 +279,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     th.set_defaults(func=cmd_think)
 
-    cy = sub.add_parser("cycle", help="run one Living Center cycle (alias of think --steps 1)")
+    cy = sub.add_parser(
+        "cycle",
+        parents=[store_sub],
+        help="run one Living Center cycle (alias of think --steps 1)",
+    )
     cy.set_defaults(func=cmd_cycle)
 
     lg = sub.add_parser(
         "log",
         aliases=["center-history"],
+        parents=[store_sub],
         help="show persisted center activity log",
     )
     lg.add_argument("--limit", type=int, default=0, help="show last N cycles (0 = all)")
     lg.set_defaults(func=cmd_log)
 
-    ap = sub.add_parser("add-pair", help="add antonym pair across cause/effect")
+    ap = sub.add_parser(
+        "add-pair",
+        parents=[store_sub],
+        help="add antonym pair across cause/effect",
+    )
     ap.add_argument("cause")
     ap.add_argument("effect")
     ap.set_defaults(func=cmd_add_pair)
 
-    au = sub.add_parser("add-under", help="add node under a pole; links opposite immediately")
+    au = sub.add_parser(
+        "add-under",
+        parents=[store_sub],
+        help="add node under a pole; links opposite immediately",
+    )
     au.add_argument("parent")
     au.add_argument("child")
     au.add_argument("--opposite", help="existing opposite node")
@@ -280,30 +316,54 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--opposite-name", help="name for new opposite node")
     au.set_defaults(func=cmd_add_under)
 
-    lo = sub.add_parser("link-opposite", help="link opposite states across hemispheres")
+    lo = sub.add_parser(
+        "link-opposite",
+        parents=[store_sub],
+        help="link opposite states across hemispheres",
+    )
     lo.add_argument("a")
     lo.add_argument("b")
     lo.set_defaults(func=cmd_link_opposite)
 
-    mg = sub.add_parser("merge", help="dedupe: merge source into target")
+    mg = sub.add_parser(
+        "merge",
+        parents=[store_sub],
+        help="dedupe: merge source into target",
+    )
     mg.add_argument("source")
     mg.add_argument("target")
     mg.set_defaults(func=cmd_merge)
 
-    mv = sub.add_parser("migrate-link", help="migrate parent and/or opposite when proven better")
+    mv = sub.add_parser(
+        "migrate-link",
+        parents=[store_sub],
+        help="migrate parent and/or opposite when proven better",
+    )
     mv.add_argument("node")
     mv.add_argument("--parent", help="new parent name, or empty string to clear")
     mv.add_argument("--opposite", help="new opposite node")
     mv.set_defaults(func=cmd_migrate)
 
-    sh = sub.add_parser("show", help="print dual-hemisphere structure")
+    sh = sub.add_parser(
+        "show",
+        parents=[store_sub],
+        help="print dual-hemisphere structure",
+    )
     sh.set_defaults(func=cmd_show)
 
-    an = sub.add_parser("answer", help="dual-hemisphere answer for a topic")
+    an = sub.add_parser(
+        "answer",
+        parents=[store_sub],
+        help="dual-hemisphere answer for a topic",
+    )
     an.add_argument("topic")
     an.set_defaults(func=cmd_answer)
 
-    ce = sub.add_parser("center", help="center navigation: review/synthesize/challenge/experiment/add/prune/retrieve/save")
+    ce = sub.add_parser(
+        "center",
+        parents=[store_sub],
+        help="center navigation: review/synthesize/challenge/experiment/add/prune/retrieve/save",
+    )
     ce.add_argument("action")
     ce.add_argument("topic", nargs="?")
     ce.set_defaults(func=cmd_center)
