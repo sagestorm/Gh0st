@@ -14,9 +14,79 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .engine import Engine, normalize
-from .model import Hemisphere
+from .model import Hemisphere, Torus
 from . import bodies
 from .seed import seed_custom
+
+
+def seed_body_from_search_edit(
+    edit: dict[str, Any] | None,
+    *,
+    instance: str,
+    cause: str,
+    effect: str,
+) -> Torus:
+    """Seed an embodied body whose dual structure reflects search invent edit_ast.
+
+    Mind-graph parents are remapped onto a body-local dual scaffold so the body
+    stays dual/I1-safe while CapProgram specialty can differ by invent ops —
+    not only by pole labels from seed_custom(cause, effect).
+    """
+    if not edit or edit.get("kind") != "edit_ast":
+        return seed_custom(cause, effect, instance=instance)
+    ast = [s for s in list(edit.get("ast") or []) if isinstance(s, dict)]
+    ops = [str(s.get("op", "")) for s in ast]
+    if not ops:
+        return seed_custom(cause, effect, instance=instance)
+
+    dig = normalize(instance).replace("rehang-", "")[:10]
+    torus = Torus()
+    torus.instance = instance
+    eng = Engine(torus)
+
+    if len(ops) == 1 and ops[0] == "wedge":
+        # Root scaffold + invent dual wedged underneath (depth structure).
+        root_c, root_e = f"iw{dig}rc", f"iw{dig}re"
+        leaf_c = str(ast[0].get("cause") or cause)
+        leaf_e = str(ast[0].get("effect") or effect)
+        eng.add_pair(root_c, root_e)
+        eng.add_pair(leaf_c, leaf_e, cause_parent=root_c, effect_parent=root_e)
+        eng.assert_no_orphans()
+        return torus
+
+    if ops and all(o == "add_dual" for o in ops):
+        # Nested chain: first invent dual is body root; later steps nest under prior.
+        for i, step in enumerate(ast):
+            c = str(step.get("cause") or "")
+            e = str(step.get("effect") or "")
+            if not c or not e:
+                return seed_custom(cause, effect, instance=instance)
+            if i == 0:
+                eng.add_pair(c, e)
+            else:
+                prev_c = str(ast[i - 1].get("cause") or "")
+                prev_e = str(ast[i - 1].get("effect") or "")
+                eng.add_pair(c, e, cause_parent=prev_c, effect_parent=prev_e)
+        eng.assert_no_orphans()
+        return torus
+
+    if len(ops) == 1 and ops[0] == "rehang":
+        # Distinct from wedge: two host duals under a root; leaf starts under
+        # host A then migrates under host B (rehang signature).
+        root_c, root_e = f"ir{dig}rc", f"ir{dig}re"
+        ha_c, ha_e = f"ir{dig}ac", f"ir{dig}ae"
+        hb_c, hb_e = f"ir{dig}bc", f"ir{dig}be"
+        leaf_c, leaf_e = f"ir{dig}lc", f"ir{dig}le"
+        eng.add_pair(root_c, root_e)
+        eng.add_pair(ha_c, ha_e, cause_parent=root_c, effect_parent=root_e)
+        eng.add_pair(hb_c, hb_e, cause_parent=root_c, effect_parent=root_e)
+        eng.add_pair(leaf_c, leaf_e, cause_parent=ha_c, effect_parent=ha_e)
+        eng.migrate_link(leaf_c, new_parent=hb_c)
+        eng.migrate_link(leaf_e, new_parent=hb_e)
+        eng.assert_no_orphans()
+        return torus
+
+    return seed_custom(cause, effect, instance=instance)
 
 
 # Seed catalog only — used when composition finds nothing unused.
@@ -833,22 +903,24 @@ def invent_and_embody(
         if topology_applied:
             store.save(eng.torus, mind_path)
 
-    # Body seed: bridge creates new poles; reparent/rehang reuses existing names as domain label.
-    if proposal.source == "topology" and proposal.edit and proposal.edit.get("kind") == "reparent":
+    # Body seed: search invent projects edit_ast into dual-safe body structure;
+    # topology reparent uses digest poles; other invent sources keep seed_custom.
+    if (
+        proposal.source == "search"
+        and proposal.edit
+        and proposal.edit.get("kind") == "edit_ast"
+    ):
+        torus = seed_body_from_search_edit(
+            proposal.edit,
+            instance=proposal.instance,
+            cause=proposal.cause,
+            effect=proposal.effect,
+        )
+    elif proposal.source == "topology" and proposal.edit and proposal.edit.get("kind") == "reparent":
         # Fresh opposite pair named from the reparent instance digest — body still dual.
         digest = normalize(proposal.instance).replace("reparent-", "")[:8]
         body_cause = f"rc{digest}"
         body_effect = f"re{digest}"
-        torus = seed_custom(body_cause, body_effect, instance=proposal.instance)
-    elif (
-        proposal.source == "search"
-        and proposal.edit
-        and proposal.edit.get("kind") == "edit_ast"
-        and normalize(proposal.instance).startswith("rehang-")
-    ):
-        digest = normalize(proposal.instance).replace("rehang-", "")[:8]
-        body_cause = f"sc{digest}c"
-        body_effect = f"sc{digest}e"
         torus = seed_custom(body_cause, body_effect, instance=proposal.instance)
     else:
         torus = seed_custom(proposal.cause, proposal.effect, instance=proposal.instance)
@@ -870,7 +942,16 @@ def invent_and_embody(
         created_from_cycle=cycle,
         parent_body=parent_body,
     )
-    form_path = bodies.write_form_module(record, mind_path, engine=body_eng)
+    invent_edit = (
+        proposal.edit
+        if proposal.source == "search"
+        and proposal.edit
+        and proposal.edit.get("kind") == "edit_ast"
+        else None
+    )
+    form_path = bodies.write_form_module(
+        record, mind_path, engine=body_eng, invent_edit=invent_edit
+    )
     record.form_path = str(form_path)
     registry = bodies.load_registry(mind_path)
     registry.bodies.append(record)

@@ -940,5 +940,168 @@ class VerifyFarVisionTests(unittest.TestCase):
             substrate_mod.reset_logs_for_tests()
 
 
+class InventBodySpecialtyG11Tests(unittest.TestCase):
+    """G11: CapProgram/specialty couples to search invent edit_ast under duals."""
+
+    def _seed_and_program(self, edit: dict, *, instance: str, cause: str, effect: str):
+        from beyond_binary import capability as capability_mod
+        from beyond_binary import invent as invent_mod
+
+        torus = invent_mod.seed_body_from_search_edit(
+            edit, instance=instance, cause=cause, effect=effect
+        )
+        eng = Engine(torus)
+        eng.assert_no_orphans()
+        refusal = eng.refuse_bit_collapse()
+        self.assertTrue(refusal.get("refused"))
+        self.assertFalse(refusal.get("collapsed", True))
+        prog = capability_mod.initial_program_for(eng, f"body-{instance[:12]}")
+        prog = capability_mod.evolve_program(prog, eng)
+        prog = capability_mod.couple_program_to_invent_edit(prog, eng, edit)
+        return eng, prog, capability_mod.interpret(prog, eng)
+
+    def test_wedge_vs_rehang_programs_differ(self):
+        wedge_edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "wedge",
+                    "parent": "hot",
+                    "child": "warm",
+                    "cause": "swg11wc",
+                    "effect": "swg11we",
+                }
+            ],
+        }
+        rehang_edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "rehang",
+                    "cause": "warm",
+                    "effect": "cool",
+                    "cause_parent": "hot",
+                    "effect_parent": "cold",
+                }
+            ],
+        }
+        _ew, pw, out_w = self._seed_and_program(
+            wedge_edit, instance="wedge-g11", cause="swg11wc", effect="swg11we"
+        )
+        _er, pr, out_r = self._seed_and_program(
+            rehang_edit, instance="rehang-g11ab", cause="warm", effect="cool"
+        )
+        self.assertIn("prim_invent_wedge_span", pw.primitives)
+        self.assertIn("prim_invent_rehang_shift", pr.primitives)
+        self.assertNotEqual(set(pw.primitives), set(pr.primitives))
+        self.assertNotEqual(
+            [o.get("op") for o in pw.ops], [o.get("op") for o in pr.ops]
+        )
+        self.assertIn("invent_wedge_span", out_w.get("result") or {})
+        self.assertIn("invent_rehang_shift", out_r.get("result") or {})
+        self.assertEqual(pw.primitives["prim_invent_wedge_span"].get("origin"), "search-invent")
+        self.assertEqual(pr.primitives["prim_invent_rehang_shift"].get("origin"), "search-invent")
+
+    def test_chain_add_dual_differs_from_flat_seed(self):
+        from beyond_binary import capability as capability_mod
+        from beyond_binary.seed import seed_custom
+
+        chain_edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "add_dual",
+                    "cause": "scg11a",
+                    "effect": "scg11b",
+                    "cause_parent": "hot",
+                    "effect_parent": "cold",
+                },
+                {
+                    "op": "add_dual",
+                    "cause": "scg11c",
+                    "effect": "scg11d",
+                    "cause_parent": "scg11a",
+                    "effect_parent": "scg11b",
+                },
+            ],
+        }
+        _ec, pc, out_c = self._seed_and_program(
+            chain_edit, instance="scg11c-scg11d", cause="scg11c", effect="scg11d"
+        )
+        flat = Engine(seed_custom("scg11c", "scg11d", instance="flat-g11"))
+        flat_prog = capability_mod.initial_program_for(flat, "flat-g11")
+        flat_prog = capability_mod.evolve_program(flat_prog, flat)
+        # Flat seed_custom has no invent coupling — chain body must carry invent prim.
+        self.assertIn("prim_invent_chain_depth", pc.primitives)
+        self.assertNotIn("prim_invent_chain_depth", flat_prog.primitives)
+        self.assertGreater(len(_ec.torus.nodes), len(flat.torus.nodes))
+        self.assertIn("invent_chain_depth", out_c.get("result") or {})
+
+    def test_invent_and_embody_couples_search_edit(self):
+        from beyond_binary import capability as capability_mod
+        from beyond_binary import invent as invent_mod
+        from beyond_binary.seed import seed_same_center
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
+            store.save(eng.torus, mind_path)
+            # Force a wedge invent candidate ahead of the queue.
+            reg = invent_mod.load_invent_registry(mind_path)
+            causes = [
+                n
+                for n in eng.torus.nodes.values()
+                if n.hemisphere is Hemisphere.CAUSE and n.opposite and n.parent
+            ]
+            self.assertTrue(causes)
+            child = causes[0]
+            parent = eng.torus.nodes[child.parent]
+            cause, effect = "swembc", "swembe"
+            instance = f"{normalize(cause)}-{normalize(effect)}"
+            edit = {
+                "kind": "edit_ast",
+                "ast": [
+                    {
+                        "op": "wedge",
+                        "parent": parent.name,
+                        "child": child.name,
+                        "cause": cause,
+                        "effect": effect,
+                    }
+                ],
+            }
+            reg.candidates.insert(
+                0,
+                invent_mod.InventCandidate(
+                    cause=cause,
+                    effect=effect,
+                    instance=instance,
+                    source="search",
+                    why="test:wedge",
+                    edit=edit,
+                    priority=99.0,
+                ),
+            )
+            invent_mod.save_invent_registry(reg, mind_path)
+            result = invent_mod.invent_and_embody(eng, mind_path, cycle=1)
+            self.assertIsNotNone(result)
+            body = result["body"]
+            prog = capability_mod.load_program(body["store_path"])
+            self.assertIn("prim_invent_wedge_span", prog.primitives)
+            self.assertEqual(
+                prog.primitives["prim_invent_wedge_span"].get("invent_ops"), "wedge"
+            )
+            body_eng = Engine(store.load(body["store_path"]))
+            body_eng.assert_no_orphans()
+            # Embodied body is not a flat 2-node seed_custom for wedge invent.
+            self.assertGreaterEqual(len(body_eng.torus.nodes), 4)
+            _, fn = bodies.load_form_specialty(
+                bodies.BodyRecord.from_dict(body)
+            )
+            out = fn()
+            self.assertEqual(out["capability"], "interpret_program")
+            self.assertIn("invent_wedge_span", out.get("result") or {})
+
+
 if __name__ == "__main__":
     unittest.main()

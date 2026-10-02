@@ -592,6 +592,93 @@ def initial_program_for(eng: Engine, body_name: str) -> CapProgram:
     return CapProgram(body_name=body_name, ops=ops, revisions=0)
 
 
+def couple_program_to_invent_edit(
+    program: CapProgram,
+    eng: Engine,
+    edit: dict[str, Any] | None,
+) -> CapProgram:
+    """Stamp search invent edit_ast into CapProgram under dual invariants (G11).
+
+    Different invent ops (wedge / add_dual chain / rehang) install distinct
+    prim_* steps so embodied specialty results differ by invent content — not
+    only by seed_custom pole labels.
+    """
+    if not edit or edit.get("kind") != "edit_ast":
+        return program
+    ast = [s for s in list(edit.get("ast") or []) if isinstance(s, dict)]
+    ops = [str(s.get("op", "")) for s in ast]
+    if not ops:
+        return program
+
+    fingerprint = "+".join(ops)
+    if len(ops) == 1 and ops[0] == "wedge":
+        name = "prim_invent_wedge_span"
+        spec: dict[str, Any] = {
+            "kind": "reduce_path",
+            "select": "depth",
+            "over": "dual_causes",
+            "reduce": "max",
+            "into": "invent_wedge_span",
+            "origin": "search-invent",
+            "invent_ops": fingerprint,
+        }
+    elif ops and all(o == "add_dual" for o in ops):
+        if len(ops) > 1:
+            name = "prim_invent_chain_depth"
+            spec = {
+                "kind": "reduce_path",
+                "select": "path_len",
+                "over": "dual_causes",
+                "reduce": "max",
+                "into": "invent_chain_depth",
+                "origin": "search-invent",
+                "invent_ops": fingerprint,
+            }
+        else:
+            name = "prim_invent_dual_attach"
+            spec = {
+                "kind": "reduce_path",
+                "select": "path_len",
+                "over": "dual_causes",
+                "reduce": "sum",
+                "into": "invent_dual_attach",
+                "origin": "search-invent",
+                "invent_ops": fingerprint,
+            }
+    elif len(ops) == 1 and ops[0] == "rehang":
+        name = "prim_invent_rehang_shift"
+        spec = {
+            "kind": "pair_metric",
+            "metric": "parent_depth_gap",
+            "into": "invent_rehang_shift",
+            "origin": "search-invent",
+            "invent_ops": fingerprint,
+        }
+    else:
+        name = f"prim_invent_{normalize(fingerprint)[:18]}"
+        spec = {
+            "kind": "branch_fanout",
+            "hemisphere": "cause",
+            "into": "invent_edit_fanout",
+            "origin": "search-invent",
+            "invent_ops": fingerprint,
+        }
+
+    op_names = {o.get("op") for o in program.ops}
+    if name in program.primitives or name in op_names:
+        return program
+    if not validate_primitive_against_duals(eng, name, spec):
+        return program
+    program.primitives[name] = dict(spec)
+    program.primitive_revisions += 1
+    _insert_before_emit(program, {"op": name})
+    into = str(spec.get("into", ""))
+    if into:
+        _ensure_emit_field(program, into)
+    program.revisions += 1
+    return program
+
+
 def _child_count_safe(eng: Engine, name: str) -> int:
     if not name or not eng.exists(name):
         return 0

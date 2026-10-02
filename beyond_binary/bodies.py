@@ -220,6 +220,7 @@ def write_form_module(
     mind_store: Path | str | None = None,
     *,
     engine: Engine | None = None,
+    invent_edit: dict[str, Any] | None = None,
 ) -> Path:
     """Emit a runnable form that interprets a per-body CapProgram."""
     mind_path = store.store_path(mind_store)
@@ -234,8 +235,13 @@ def write_form_module(
     record.specialty = specialty_name
 
     # Persist an initial capability program derived from live structure.
+    # Search invent edit_ast couples distinct prim_* into the CapProgram (G11).
     program = capability_mod.initial_program_for(eng, record.name)
     program = capability_mod.evolve_program(program, eng)
+    if invent_edit:
+        program = capability_mod.couple_program_to_invent_edit(
+            program, eng, invent_edit
+        )
     cap_path = capability_mod.save_program(program, record.store_path)
     record.capability_path = str(cap_path)
 
