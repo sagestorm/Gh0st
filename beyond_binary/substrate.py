@@ -404,20 +404,38 @@ def reset_logs_for_tests() -> None:
         pass
 
 
-def snapshot_logs() -> dict[str, list[dict[str, Any]]]:
-    """Copy accept/reject/error ledgers (for nested harnesses that must restore)."""
+def snapshot_logs() -> dict[str, Any]:
+    """Copy accept/reject/error ledgers + search pending queues.
+
+    Nested harnesses (product scoreboard) call reset_logs_for_tests which also
+    clears search-substrate pending; restore must put both back.
+    """
+    pending: dict[str, list[dict[str, Any]]] = {}
+    try:
+        from . import search_substrate as ss
+
+        pending = ss.snapshot_pending()
+    except Exception:  # noqa: BLE001
+        pending = {}
     return {
         "accepts": [dict(a) for a in _ACCEPT_LOG],
         "rejects": [dict(r) for r in _REJECT_LOG],
         "errors": [dict(e) for e in _ERROR_LOG],
+        "pending": pending,
     }
 
 
-def restore_logs(snap: dict[str, list[dict[str, Any]]] | None) -> None:
-    """Replace ledgers with a prior snapshot (or clear when snap is None)."""
+def restore_logs(snap: dict[str, Any] | None) -> None:
+    """Replace ledgers + pending with a prior snapshot (or clear when snap is None)."""
     _ACCEPT_LOG.clear()
     _REJECT_LOG.clear()
     _ERROR_LOG.clear()
+    try:
+        from . import search_substrate as ss
+
+        ss.restore_pending((snap or {}).get("pending") if snap else None)
+    except Exception:  # noqa: BLE001
+        pass
     if not snap:
         return
     _ACCEPT_LOG.extend(dict(a) for a in snap.get("accepts") or [])

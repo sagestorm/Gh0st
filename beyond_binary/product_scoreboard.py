@@ -26,10 +26,12 @@ DEFAULT_THINK_STEPS = 6
 
 
 def _path_names(dual: Any) -> list[str]:
+    """Flatten user-facing DualAnswer fields (paths + between edges) to names."""
     names: list[str] = []
-    for p in list(getattr(dual, "cause_paths", None) or []) + list(
+    fields = list(getattr(dual, "cause_paths", None) or []) + list(
         getattr(dual, "effect_paths", None) or []
-    ):
+    ) + list(getattr(dual, "between", None) or [])
+    for p in fields:
         if isinstance(p, (list, tuple)):
             names.extend(str(x) for x in p)
         else:

@@ -1463,6 +1463,7 @@ class ProductScoreboardTests(unittest.TestCase):
         import os
         from beyond_binary import product_scoreboard as sb
         from beyond_binary import substrate as substrate_mod
+        from beyond_binary import search_substrate as search_mod
 
         os.environ.pop(substrate_mod.ENV_FLAG, None)
         substrate_mod.reset_logs_for_tests()
@@ -1473,11 +1474,35 @@ class ProductScoreboardTests(unittest.TestCase):
                 "accepted": True,
             }
         )
+        search_mod._PENDING_GOALS.append({"name": "ambient-goal", "why": "sentinel"})
         before = substrate_mod.snapshot_logs()
         sb.run_scoreboard()
         after = substrate_mod.snapshot_logs()
-        self.assertEqual(before, after)
+        self.assertEqual(before["accepts"], after["accepts"])
+        self.assertEqual(before["rejects"], after["rejects"])
+        self.assertEqual(before["errors"], after["errors"])
+        self.assertEqual(before.get("pending"), after.get("pending"))
+        self.assertEqual(
+            (after.get("pending") or {}).get("goals"),
+            [{"name": "ambient-goal", "why": "sentinel"}],
+        )
         substrate_mod.reset_logs_for_tests()
+
+    def test_path_names_includes_between_digests(self):
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary.engine import DualAnswer
+
+        dual = DualAnswer(
+            topic="water",
+            cause_paths=[["hot", "water"]],
+            effect_paths=[["cold", "condensation"]],
+            between=[("water", "swdeadbeefc"), ("swdeadbeefc", "scdeadbeefa")],
+            note="test",
+        )
+        flat = sb._path_names(dual)
+        digests = [n for n in flat if search_mod.looks_like_digest_pole(n)]
+        self.assertEqual(sorted(set(digests)), ["scdeadbeefa", "swdeadbeefc"])
 
 
 if __name__ == "__main__":

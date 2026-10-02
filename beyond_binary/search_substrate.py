@@ -1381,3 +1381,24 @@ def reset_pending_for_tests() -> None:
     _PENDING_REFLECT.clear()
     _PENDING_GOALS.clear()
     _PENDING_FORM.clear()
+
+
+def snapshot_pending() -> dict[str, list[dict[str, Any]]]:
+    """Copy pending invent/reflect/goal/form queues (nested harness restore)."""
+    return {
+        "invent": [dict(r) for r in _PENDING_INVENT],
+        "reflect": [dict(r) for r in _PENDING_REFLECT],
+        "goals": [dict(r) for r in _PENDING_GOALS],
+        "form": [dict(r) for r in _PENDING_FORM],
+    }
+
+
+def restore_pending(snap: dict[str, list[dict[str, Any]]] | None) -> None:
+    """Replace pending queues with a prior snapshot (or clear when snap is None)."""
+    reset_pending_for_tests()
+    if not snap:
+        return
+    _PENDING_INVENT.extend(dict(r) for r in snap.get("invent") or [])
+    _PENDING_REFLECT.extend(dict(r) for r in snap.get("reflect") or [])
+    _PENDING_GOALS.extend(dict(r) for r in snap.get("goals") or [])
+    _PENDING_FORM.extend(dict(r) for r in snap.get("form") or [])
