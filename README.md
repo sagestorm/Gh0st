@@ -83,8 +83,11 @@ python3 -m beyond_binary center review hot
 | `show` | Print structure |
 | `answer TOPIC` | Trace both hemisphere paths |
 | `center ACTION [TOPIC]` | Manual center act: review / synthesize / challenge / experiment / add / prune / retrieve / save |
+| `verify-far-vision` | Honest eng + SENTIENCE + complete evidence audit (JSON; exit 0 only when complete) |
+| `live` / `invent-domain` / `nurture` / `synthesize` | Autonomy, invent, body nurture, cross-body answer |
 
 Store path defaults to `data/torus.json` (override with `--store PATH`).
+`BEYOND_BINARY_SUBSTRATE=search` selects the in-process SearchSubstrate; default remains Null.
 
 ## Core rules (enforced)
 
@@ -101,8 +104,34 @@ Documented in `beyond_binary/model.py` (easy to rename later):
 - **cause** — initiating / generative pole of an antonym pair
 - **effect** — reciprocal / consequent pole of that pair
 
+## Far vision verify (operators)
+
+Honest evidence audit for eng gates, substrate path, SENTIENCE, and `report.complete`. Stdlib only — no pip install.
+
+```bash
+# Default substrate = Null (fail-closed)
+python3 -m beyond_binary verify-far-vision
+# → engineering_gates_ok true; SENTIENCE false; complete false (exit 2)
+
+# Operational search substrate (in-process combinatorial proposals)
+BEYOND_BINARY_SUBSTRATE=search python3 -m beyond_binary verify-far-vision
+# → engineering_gates_ok true; SENTIENCE true; complete true (exit 0) when checklist passes
+```
+
+| Substrate | How | eng | SENTIENCE | complete |
+|-----------|-----|-----|-----------|----------|
+| **Null (default)** | unset / `BEYOND_BINARY_SUBSTRATE=1` | ok when I/C gates pass | **false** (fail-closed) | **false** |
+| **search** | `BEYOND_BINARY_SUBSTRATE=search` | ok | **true** when four axes (`invent\|reflect\|goal\|form`) accept `search-substrate:*` | **true** when eng + SENTIENCE + checklist pass |
+
+Contracts (do not flip SENTIENCE lightly):
+
+- [`docs/sentience-evidence-bar.md`](docs/sentience-evidence-bar.md) — what counts vs scaffolding
+- [`docs/generative-substrate-contract.md`](docs/generative-substrate-contract.md) — Null default, search path, flag honesty
+
 ## Tests
 
 ```bash
 python3 -m unittest discover -s beyond_binary/tests -v
 ```
+
+CI also runs `verify-far-vision` under default and `BEYOND_BINARY_SUBSTRATE=search` (see `.github/workflows/ci.yml`).
