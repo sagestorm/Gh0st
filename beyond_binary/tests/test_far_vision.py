@@ -439,6 +439,99 @@ class SynonymCascadeTests(unittest.TestCase):
             eng.assert_no_orphans()
 
 
+class OpenMindScaffoldTests(unittest.TestCase):
+    def test_primitive_invent_outside_closed_alphabet(self):
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import mind as mind_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            activity = [
+                {
+                    "cycle": 1,
+                    "nodes_before": 2,
+                    "nodes_after": 2,
+                    "acts": [
+                        {
+                            "act": "challenge",
+                            "detail": {
+                                "one_sided": True,
+                                "flags": [
+                                    {"node": "hot", "flag": "asymmetric_link"}
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ]
+            alphabet = invent_mod.closed_invent_alphabet(eng, [])
+            result = mind_mod.invent_domain(
+                eng, mind_path, cycle=1, activity=activity
+            )
+            self.assertTrue(result.get("invented"))
+            inv = result["invention"]
+            self.assertEqual(inv["source"], "primitive")
+            self.assertTrue(inv.get("why"))
+            self.assertNotIn(inv["cause"].lower(), alphabet)
+            self.assertNotIn(inv["effect"].lower(), alphabet)
+
+    def test_policy_differential_same_counters_different_weights(self):
+        from beyond_binary import policy as policy_mod
+
+        grow_pol = policy_mod.MetaPolicy(
+            grow_weight=2.0, prune_weight=0.1, updates=1
+        )
+        prune_pol = policy_mod.MetaPolicy(
+            grow_weight=0.1, prune_weight=2.0, updates=1
+        )
+        g = policy_mod.strategy_from_policy(grow_pol)
+        p = policy_mod.strategy_from_policy(prune_pol)
+        self.assertNotEqual(g["reason"], p["reason"])
+        self.assertTrue(g["from_policy"] and p["from_policy"])
+        self.assertGreater(g["grow_budget"], 0)
+        self.assertEqual(p["grow_budget"], 0)
+        self.assertTrue(p["prefer_prune"])
+
+    def test_self_directed_live_without_every_flags(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import policy as policy_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
+            store.save(eng.torus, mind_path)
+            policy_mod.save_policy(
+                policy_mod.MetaPolicy(
+                    invent_weight=2.0,
+                    nurture_weight=2.0,
+                    grow_weight=0.5,
+                    updates=1,
+                ),
+                mind_path,
+            )
+            bodies.embody(
+                eng, name="kid", domain="optical", mind_store=mind_path
+            )
+            center = LivingCenter(eng, history=[])
+            center.mind_store = mind_path
+            result = center.live(
+                max_cycles=8,
+                stop_when_idle=0,
+                invent_every=0,
+                nurture_every=0,
+                mind_store=mind_path,
+            )
+            self.assertTrue(
+                any(
+                    isinstance(r, dict) and r.get("invented")
+                    for r in result.get("inventions", [])
+                )
+            )
+            self.assertGreater(len(result.get("nurtured") or []), 0)
+
+
 class VerifyFarVisionTests(unittest.TestCase):
     def test_verify_reports_incomplete_sentience(self):
         from beyond_binary import verify
@@ -449,6 +542,9 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertFalse(by_id["SENTIENCE"]["ok"])
         self.assertTrue(by_id["I1"]["ok"])
         self.assertTrue(by_id["I5"]["ok"])
+        self.assertTrue(by_id["C4e"]["ok"])
+        self.assertTrue(by_id["C3p"]["ok"])
+        self.assertTrue(by_id["C6s"]["ok"])
         self.assertTrue(report["engineering_gates_ok"])
 
 

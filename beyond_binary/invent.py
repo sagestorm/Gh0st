@@ -37,7 +37,8 @@ class Invention:
     effect: str
     instance: str
     body_name: str
-    source: str = "seed"  # compose | promote | seed
+    source: str = "seed"  # primitive | compose | promote | seed
+    why: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -46,6 +47,7 @@ class Invention:
             "instance": self.instance,
             "body_name": self.body_name,
             "source": self.source,
+            "why": self.why,
         }
 
 
@@ -56,6 +58,7 @@ class InventCandidate:
     instance: str
     source: str
     used: bool = False
+    why: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +67,7 @@ class InventCandidate:
             "instance": self.instance,
             "source": self.source,
             "used": self.used,
+            "why": self.why,
         }
 
     @classmethod
@@ -74,6 +78,7 @@ class InventCandidate:
             instance=data["instance"],
             source=str(data.get("source", "seed")),
             used=bool(data.get("used", False)),
+            why=str(data.get("why", "")),
         )
 
 
@@ -314,13 +319,145 @@ def seed_candidates(used_poles: set[str], used_instances: set[str]) -> list[Inve
     return out
 
 
-def refresh_invent_registry(eng: Engine, mind_store) -> InventRegistry:
-    """Harvest structure, compose/promote, merge into dynamic invent registry."""
+def closed_invent_alphabet(eng: Engine, registry_bodies: Iterable[dict]) -> set[str]:
+    """Labels reachable by seed/compose/promote — primitives must fall outside."""
+    alpha = already_used_poles(eng, registry_bodies)
+    for cause, effect, instance in INVENTABLE:
+        alpha.add(normalize(cause))
+        alpha.add(normalize(effect))
+        alpha.add(normalize(instance))
+    known = harvest_pairs(eng, registry_bodies)
+    for i, (a, b) in enumerate(known[:8]):
+        for c, d in known[i + 1 :]:
+            alpha.add(normalize(f"{a}-{c}"))
+            alpha.add(normalize(f"{b}-{d}"))
+            alpha.add(normalize(f"{normalize(a)}-{normalize(c)}-{normalize(b)}-{normalize(d)}"))
+    for cause, effect in known:
+        if eng.exists(cause):
+            node = eng.get(cause)
+            if node.parent is not None:
+                alpha.add(normalize(cause))
+                alpha.add(normalize(effect))
+                alpha.add(normalize(f"{normalize(cause)}-{normalize(effect)}"))
+    return alpha
+
+
+def pressure_stems(
+    activity: list[dict[str, Any]] | None,
+    journal_rows: list[Any] | None = None,
+) -> list[tuple[str, str]]:
+    """Collect (stem, why) from challenge/synthesize pressure + journal."""
+    stems: list[tuple[str, str]] = []
+    for row in (activity or [])[-12:]:
+        for act in row.get("acts") or []:
+            if not isinstance(act, dict):
+                continue
+            name = act.get("act")
+            detail = act.get("detail") or {}
+            if name == "challenge":
+                for flag in detail.get("flags") or []:
+                    if isinstance(flag, dict) and flag.get("node"):
+                        stems.append(
+                            (str(flag["node"]), f"challenge:{flag.get('flag')}")
+                        )
+            elif name == "synthesize_check":
+                for topic in detail.get("refused") or []:
+                    stems.append((str(topic), "synthesize_refused"))
+    for entry in (journal_rows or [])[-8:]:
+        reflection = (
+            entry.reflection
+            if hasattr(entry, "reflection")
+            else (entry.get("reflection") if isinstance(entry, dict) else "")
+        )
+        if reflection == "challenge_pressure":
+            stems.append(("tension", "journal:challenge_pressure"))
+        elif reflection == "growth_stalled":
+            stems.append(("drift", "journal:growth_stalled"))
+    return stems
+
+
+def mint_primitive_candidate(
+    stem: str,
+    why: str,
+    alphabet: set[str],
+    used_instances: set[str],
+) -> Optional[InventCandidate]:
+    """Mint a new opposite-state pole pair outside the closed invent alphabet."""
+    import re
+
+    from .engine import is_bit_collapse_topic
+
+    base = re.sub(r"[^a-z0-9]+", "", normalize(stem))[:10]
+    if len(base) < 2:
+        return None
+    trials = [
+        (f"{base}ure", f"un{base}ure"),
+        (f"proto{base}", f"ecto{base}"),
+        (f"{base}al", f"{base}less"),
+        (f"{base}ive", f"{base}iveopp"),
+    ]
+    for cause, effect in trials:
+        if is_bit_collapse_topic(cause) or is_bit_collapse_topic(effect):
+            continue
+        if normalize(cause) == normalize(effect):
+            continue
+        if normalize(cause) in alphabet or normalize(effect) in alphabet:
+            continue
+        instance = f"{normalize(cause)}-{normalize(effect)}"
+        if normalize(instance) in used_instances or normalize(instance) in alphabet:
+            continue
+        return InventCandidate(
+            cause=cause,
+            effect=effect,
+            instance=instance,
+            source="primitive",
+            why=why,
+        )
+    return None
+
+
+def primitive_candidates(
+    eng: Engine,
+    registry_bodies: Iterable[dict],
+    *,
+    activity: list[dict[str, Any]] | None = None,
+    journal_rows: list[Any] | None = None,
+    used_instances: set[str] | None = None,
+    limit: int = 4,
+) -> list[InventCandidate]:
+    alphabet = closed_invent_alphabet(eng, registry_bodies)
+    used_inst = set(used_instances or ())
+    out: list[InventCandidate] = []
+    seen: set[str] = set()
+    for stem, why in pressure_stems(activity, journal_rows):
+        cand = mint_primitive_candidate(stem, why, alphabet, used_inst)
+        if cand is None:
+            continue
+        key = normalize(cand.instance)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def refresh_invent_registry(
+    eng: Engine,
+    mind_store,
+    *,
+    activity: list[dict[str, Any]] | None = None,
+    journal_rows: list[Any] | None = None,
+) -> InventRegistry:
+    """Harvest structure + pressure primitives into dynamic invent registry."""
+    from . import journal as journal_mod
+    from . import store
+
     body_registry = bodies.load_registry(mind_store)
     body_dicts = [b.to_dict() for b in body_registry.bodies]
     used_poles = already_used_poles(eng, body_dicts)
     used_instances = already_used_instances(eng, body_dicts)
-    # Also treat already-registered invent instances as used.
     registry = load_invent_registry(mind_store)
     for cand in registry.candidates:
         if cand.used:
@@ -329,10 +466,28 @@ def refresh_invent_registry(eng: Engine, mind_store) -> InventRegistry:
             used_poles.add(normalize(cand.effect))
     known = harvest_pairs(eng, body_dicts)
 
+    if activity is None:
+        try:
+            activity = store.load_activity(mind_store)
+        except Exception:  # noqa: BLE001
+            activity = []
+    if journal_rows is None:
+        try:
+            journal_rows = journal_mod.load_journal(mind_store)
+        except Exception:  # noqa: BLE001
+            journal_rows = []
+
     existing_keys = {normalize(c.instance) for c in registry.candidates}
 
     for cand in (
-        compose_candidates(known, used_poles, used_instances)
+        primitive_candidates(
+            eng,
+            body_dicts,
+            activity=activity,
+            journal_rows=journal_rows,
+            used_instances=used_instances,
+        )
+        + compose_candidates(known, used_poles, used_instances)
         + promote_candidates(known, eng, used_instances)
         + seed_candidates(used_poles, used_instances)
     ):
@@ -346,27 +501,41 @@ def refresh_invent_registry(eng: Engine, mind_store) -> InventRegistry:
     return registry
 
 
-def next_invention(eng: Engine, mind_store) -> Optional[Invention]:
-    registry = refresh_invent_registry(eng, mind_store)
+def next_invention(
+    eng: Engine,
+    mind_store,
+    *,
+    activity: list[dict[str, Any]] | None = None,
+    journal_rows: list[Any] | None = None,
+) -> Optional[Invention]:
+    registry = refresh_invent_registry(
+        eng, mind_store, activity=activity, journal_rows=journal_rows
+    )
     body_registry = bodies.load_registry(mind_store)
     used_names = {normalize(b.name) for b in body_registry.bodies}
     body_dicts = [b.to_dict() for b in body_registry.bodies]
     used_poles = already_used_poles(eng, body_dicts)
     used_instances = already_used_instances(eng, body_dicts)
+    alphabet = closed_invent_alphabet(eng, body_dicts)
 
-    # Prefer compose → promote → seed among unused candidates.
-    order = {"compose": 0, "promote": 1, "seed": 2}
+    # Prefer primitive (open) → compose → promote → seed.
+    order = {"primitive": 0, "compose": 1, "promote": 2, "seed": 3}
     unused = [c for c in registry.candidates if not c.used]
     unused.sort(key=lambda c: order.get(c.source, 9))
 
     for cand in unused:
-        if cand.source != "promote":
+        if cand.source == "primitive":
+            if (
+                normalize(cand.cause) in alphabet
+                or normalize(cand.effect) in alphabet
+            ):
+                continue
+        elif cand.source != "promote":
             if normalize(cand.cause) in used_poles or normalize(cand.effect) in used_poles:
                 continue
         if normalize(cand.instance) in used_instances:
             continue
         body_name = f"inv-{cand.instance}"
-        # Keep body names filesystem-safe and short-ish.
         if len(body_name) > 48:
             body_name = f"inv-{normalize(cand.cause)[:16]}-{normalize(cand.effect)[:16]}"
         if normalize(body_name) in used_names:
@@ -377,6 +546,7 @@ def next_invention(eng: Engine, mind_store) -> Optional[Invention]:
             instance=cand.instance,
             body_name=body_name,
             source=cand.source,
+            why=cand.why,
         )
     return None
 
@@ -396,9 +566,13 @@ def invent_and_embody(
     *,
     cycle: int | None = None,
     parent_body: str | None = None,
+    activity: list[dict[str, Any]] | None = None,
+    journal_rows: list[Any] | None = None,
 ):
-    """Invent a new domain body from composed/promoted/seed structure."""
-    proposal = next_invention(eng, mind_store)
+    """Invent a new domain body (primitive/compose/promote/seed)."""
+    proposal = next_invention(
+        eng, mind_store, activity=activity, journal_rows=journal_rows
+    )
     if proposal is None:
         return None
 
@@ -442,6 +616,7 @@ def invent_and_embody(
             "effect": proposal.effect,
             "instance": proposal.instance,
             "source": proposal.source,
+            "why": proposal.why,
         },
         "body": record.to_dict(),
     }

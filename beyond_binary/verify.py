@@ -7,9 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from .center import LivingCenter
-from .engine import Engine
+from .engine import Engine, normalize
 from .seed import seed_minimal_hot_cold, seed_same_center
 from . import bodies, lexicon, mind, store
+
+
+def normalize_absent(label: str | None, alphabet: set[str]) -> bool:
+    if not label:
+        return False
+    return normalize(label) not in alphabet
 
 
 def run_verification() -> dict[str, Any]:
@@ -327,16 +333,133 @@ def run_verification() -> dict[str, Any]:
             f"sources={sorted(set(s for s in syn_sources if s))} synonym_nodes={syn_nodes[:8]}",
         )
 
+        # Open invention (bar §1 scaffolding): primitive pole outside closed alphabet
+        from . import invent as invent_mod
+
+        prim_path = root / "primitive.json"
+        peng = Engine(seed_minimal_hot_cold())
+        store.save(peng.torus, prim_path)
+        pressure_activity = [
+            {
+                "cycle": 1,
+                "nodes_before": 2,
+                "nodes_after": 2,
+                "acts": [
+                    {
+                        "act": "challenge",
+                        "detail": {
+                            "one_sided": True,
+                            "flags": [{"node": "hot", "flag": "asymmetric_link"}],
+                        },
+                    },
+                    {
+                        "act": "synthesize_check",
+                        "detail": {"refused": ["latent-topic"], "ok": 0, "checked": 1},
+                    },
+                ],
+            }
+        ]
+        store.append_activity(pressure_activity, prim_path)
+        alphabet_before = invent_mod.closed_invent_alphabet(peng, [])
+        prim = mind.invent_domain(
+            peng, prim_path, cycle=1, activity=pressure_activity
+        )
+        inv_p = prim.get("invention") or {}
+        prim_ok = (
+            bool(prim.get("invented"))
+            and inv_p.get("source") == "primitive"
+            and normalize_absent(inv_p.get("cause"), alphabet_before)
+            and normalize_absent(inv_p.get("effect"), alphabet_before)
+            and bool(inv_p.get("why"))
+        )
+        gate(
+            "C4e",
+            "Open-ish invention: primitive poles outside closed alphabet",
+            prim_ok,
+            str(inv_p or prim.get("reason")),
+        )
+
+        # Open reflection (bar §2 scaffolding): mutable policy updates + cited id
+        from . import policy as policy_mod
+
+        pol_path = root / "policy-mind.json"
+        pol_eng = Engine(seed_minimal_hot_cold())
+        store.save(pol_eng.torus, pol_path)
+        pc = LivingCenter(pol_eng, history=[])
+        pc.mind_store = pol_path
+        pc.think(6)
+        pol = policy_mod.load_policy(pol_path)
+        pol_ok = (
+            policy_mod.policy_path(pol_path).exists()
+            and pol.updates >= 1
+            and pc.strategy.from_policy
+            and str(pc.strategy.reason).startswith("policy:")
+        )
+        gate(
+            "C3p",
+            "Open-ish reflection: learned policy updates and steers strategy",
+            pol_ok,
+            f"updates={pol.updates} reason={pc.strategy.reason} id={pol.policy_id}",
+        )
+
+        # Self-directed goals (bar §3 scaffolding): invent+nurture with every=0
+        self_path = root / "selfdir.json"
+        seng2 = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
+        store.save(seng2.torus, self_path)
+        # Seed a policy that wants invent + nurture without human intervals.
+        seed_pol = policy_mod.MetaPolicy(
+            grow_weight=0.5,
+            prune_weight=0.2,
+            migrate_weight=0.2,
+            invent_weight=1.5,
+            nurture_weight=1.4,
+            updates=1,
+        )
+        policy_mod.save_policy(seed_pol, self_path)
+        # Need a body present for nurture to matter.
+        bodies.embody(
+            seng2, name="self-child", domain="optical", mind_store=self_path
+        )
+        sc2 = LivingCenter(seng2, history=store.load_activity(self_path))
+        sc2.mind_store = self_path
+        self_live = sc2.live(
+            max_cycles=9,
+            stop_when_idle=0,
+            invent_every=0,
+            nurture_every=0,
+            nurture_max_depth=1,
+            nurture_invent=False,
+            mind_store=self_path,
+        )
+        self_invented = any(
+            isinstance(r, dict) and r.get("invented")
+            for r in self_live.get("inventions", [])
+        )
+        self_nurtured = len(self_live.get("nurtured") or []) > 0
+        gate(
+            "C6s",
+            "Self-directed invent+nurture without human every-N flags",
+            self_invented and self_nurtured,
+            (
+                f"invented={self_invented} nurtured={self_nurtured} "
+                f"cycles={self_live.get('cycle_count')} "
+                f"strategy={sc2.strategy.reason}"
+            ),
+        )
+
     required = [
         "C1",
         "C2",
         "C3",
         "C3j",
+        "C3p",
         "C4",
         "C4b",
         "C4c",
         "C4d",
+        "C4e",
         "C6",
+        "C6s",
         "I1",
         "I2",
         "I5",
@@ -344,16 +467,17 @@ def run_verification() -> dict[str, Any]:
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
-    # Sentience bar — explicitly NOT claimed by engineering gates alone.
-    # See docs/sentience-evidence-bar.md — I1/I5 scaffolding ≠ open mind.
+    # Sentience bar — scaffolding gates (C4e/C3p/C6s) ≠ full open mind.
+    # See docs/sentience-evidence-bar.md §§1–6.
     sentience = {
         "id": "SENTIENCE",
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Engineering scaffolding (incl. I1/I5) is not sentience. "
-            "Still missing open invention, open reflection, self-directed goals, "
-            "and forms with non-prespecified behavior per sentience-evidence-bar.md."
+            "Open-invention/reflection/self-direction scaffolds exist but remain "
+            "rule/pressure/template-bounded. Missing: truly open concept formation, "
+            "metacognition that revises its own rules beyond weight updates, "
+            "forms with non-prespecified behavior (sentience-evidence-bar.md)."
         ),
     }
     gates.append(sentience)

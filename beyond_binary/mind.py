@@ -157,14 +157,21 @@ def invent_domain(
     *,
     cycle: int | None = None,
     parent_body: str | None = None,
+    activity: list[dict[str, Any]] | None = None,
+    journal_rows: list[Any] | None = None,
 ) -> dict[str, Any]:
     result = invent.invent_and_embody(
-        mind, mind_store, cycle=cycle, parent_body=parent_body
+        mind,
+        mind_store,
+        cycle=cycle,
+        parent_body=parent_body,
+        activity=activity,
+        journal_rows=journal_rows,
     )
     if result is None:
         return {
             "invented": False,
-            "reason": "no unused composed/promoted/seed domains",
+            "reason": "no unused primitive/composed/promoted/seed domains",
         }
     return {"invented": True, **result}
 

@@ -81,13 +81,17 @@ class StructuralScore:
 
 @dataclass
 class Strategy:
-    """Metacognitive bias derived from reflective journal + activity history."""
+    """Metacognitive bias from learned policy + journal + activity history."""
 
     grow_budget: int = MAX_NEW_PAIRS_PER_CYCLE
     prefer_prune: bool = False
     prefer_migrate: bool = False
     reason: str = "default"
     from_journal: bool = False
+    from_policy: bool = False
+    policy_id: str = ""
+    want_invent: bool = False
+    want_nurture: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +100,10 @@ class Strategy:
             "prefer_migrate": self.prefer_migrate,
             "reason": self.reason,
             "from_journal": self.from_journal,
+            "from_policy": self.from_policy,
+            "policy_id": self.policy_id,
+            "want_invent": self.want_invent,
+            "want_nurture": self.want_nurture,
         }
 
     @classmethod
@@ -106,6 +114,10 @@ class Strategy:
             prefer_migrate=bool(data.get("prefer_migrate", False)),
             reason=str(data.get("reason", "default")),
             from_journal=bool(data.get("from_journal", False)),
+            from_policy=bool(data.get("from_policy", False)),
+            policy_id=str(data.get("policy_id", "")),
+            want_invent=bool(data.get("want_invent", False)),
+            want_nurture=bool(data.get("want_nurture", False)),
         )
 
 
@@ -165,8 +177,28 @@ class LivingCenter:
         return [by_cycle[k] for k in sorted(by_cycle)]
 
     def metacognize(self, history: list[dict[str, Any]] | None = None) -> Strategy:
-        """Reflective journal first; fall back to raw activity history (Phase 4+)."""
+        """Learned policy (open reflection) → journal hints → activity history."""
+        from . import policy as policy_mod
+
         journal_rows = self.load_journal()
+        # Mutable policy: update from journal when present; steer when learned.
+        if self.mind_store is not None:
+            pol = policy_mod.load_policy(self.mind_store)
+            if journal_rows:
+                before_updates = pol.updates
+                pol = policy_mod.update_policy_from_journal(pol, journal_rows)
+                if pol.updates != before_updates or not policy_mod.policy_path(
+                    self.mind_store
+                ).exists():
+                    policy_mod.save_policy(pol, self.mind_store)
+            if pol.updates > 0:
+                self.strategy = Strategy.from_dict(
+                    policy_mod.strategy_from_policy(
+                        pol, max_new_pairs=self.max_new_pairs_per_cycle
+                    )
+                )
+                return self.strategy
+
         from_j = journal.strategy_from_journal(
             journal_rows,
             max_new_pairs=self.max_new_pairs_per_cycle,
@@ -416,15 +448,34 @@ class LivingCenter:
                     )
                 except Exception as exc:  # noqa: BLE001
                     embodied_list.append({"error": str(exc)})
-            if invent_every and (i + 1) % invent_every == 0 and self.mind_store:
+            # Human interval flags OR self-directed policy wants.
+            do_invent = bool(
+                self.mind_store
+                and (
+                    (invent_every and (i + 1) % invent_every == 0)
+                    or (invent_every == 0 and self.strategy.want_invent)
+                )
+            )
+            do_nurture = bool(
+                self.mind_store
+                and (
+                    (nurture_every and (i + 1) % nurture_every == 0)
+                    or (nurture_every == 0 and self.strategy.want_nurture)
+                )
+            )
+            if do_invent:
                 from . import mind as mind_mod
 
                 inventions.append(
                     mind_mod.invent_domain(
-                        self.engine, self.mind_store, cycle=self._cycle_index
+                        self.engine,
+                        self.mind_store,
+                        cycle=self._cycle_index,
+                        activity=self.activity,
+                        journal_rows=self.journal_entries,
                     )
                 )
-            if nurture_every and (i + 1) % nurture_every == 0 and self.mind_store:
+            if do_nurture:
                 from . import mind as mind_mod
 
                 nurtured.append(
