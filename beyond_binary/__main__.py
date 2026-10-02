@@ -224,6 +224,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if result.get("complete") else 2
 
 
+def cmd_product_scoreboard(args: argparse.Namespace) -> int:
+    """Null-vs-search product honesty adjunct (does not redefine SENTIENCE)."""
+    from . import product_scoreboard as scoreboard_mod
+
+    probes = tuple(args.probe) if args.probe else scoreboard_mod.DEFAULT_PROBES
+    result = scoreboard_mod.run_scoreboard(
+        think_steps=args.steps,
+        probes=probes,
+    )
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("meet_or_exceed") else 2
+
+
 def cmd_embody(args: argparse.Namespace) -> int:
     eng, target = _eng(args.store)
     center = _center(eng, target)
@@ -479,6 +492,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     bind("nurture", "think (+optional invent) across body lineage", cmd_nurture, extras=nurture_extras)
     bind("verify-far-vision", "honest evidence audit for the far-vision goal", cmd_verify)
+
+    def scoreboard_extras(sp):
+        sp.add_argument("--steps", type=int, default=6, help="think cycles per arm")
+        sp.add_argument(
+            "--probe",
+            action="append",
+            default=[],
+            help="answer probe topic (repeatable; defaults water/boiling/warm)",
+        )
+
+    bind(
+        "product-scoreboard",
+        "Null vs search product meet-or-exceed (readable duals; no LLM)",
+        cmd_product_scoreboard,
+        extras=scoreboard_extras,
+    )
 
     def embody_extras(sp):
         sp.add_argument("name")

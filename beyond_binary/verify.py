@@ -943,6 +943,34 @@ def run_verification() -> dict[str, Any]:
         g9_ev,
     )
 
+    # P1 — product honesty: Null vs search meet-or-exceed (does not redefine SENTIENCE).
+    # Nested harness saves/restores substrate ledgers so SUB/SENTIENCE stay honest.
+    from . import product_scoreboard as scoreboard_mod
+
+    try:
+        board = scoreboard_mod.run_scoreboard()
+        p1_ok = bool(board.get("meet_or_exceed"))
+        regs = list(board.get("regressions") or [])
+        p1_ev = (
+            f"meet_or_exceed={p1_ok} regressions={regs[:6]} "
+            f"null_score={board.get('null', {}).get('score')} "
+            f"search_score={board.get('search', {}).get('score')} "
+            f"search_readable={board.get('search', {}).get('readable_name_ratio')} "
+            f"search_path_digests={board.get('search', {}).get('answer_path_digests')} "
+            f"search_invent_applied={board.get('search', {}).get('invent_applied')} "
+            f"search_invent_provenance={board.get('search', {}).get('invent_provenance')}"
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-closed product adjunct
+        p1_ok = False
+        p1_ev = f"scoreboard_error={exc}"
+        board = {"ok": False, "error": str(exc)}
+    gate(
+        "P1",
+        "Product scoreboard: search meets or exceeds Null (readable duals)",
+        p1_ok,
+        p1_ev,
+    )
+
     required = [
         "C1",
         "C2",
@@ -965,6 +993,7 @@ def run_verification() -> dict[str, Any]:
         "I6",
         "SUB",
         "G9",
+        "P1",
     ]
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
@@ -1040,7 +1069,7 @@ def run_verification() -> dict[str, Any]:
         "missing": missing,
         "criterion": (
             "complete iff engineering_gates_ok AND SENTIENCE AND search path "
-            "AND every required I1–I6/C1–C6(+C3j/C3p/C4e/C4f/C6s/SUB) gate has "
+            "AND every required I1–I6/C1–C6(+C3j/C3p/C4e/C4f/C6s/SUB/G9/P1) gate has "
             "direct evidence; fail-closed on default/Null"
         ),
     }
@@ -1062,6 +1091,7 @@ def run_verification() -> dict[str, Any]:
         "engineering_gates_ok": all_required_ok,
         "gates": gates,
         "substrate": sub_status,
+        "product_scoreboard": board if isinstance(board, dict) else {"ok": False},
         "authorization": authorization,
         "note": note,
     }

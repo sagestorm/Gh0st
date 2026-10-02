@@ -404,6 +404,27 @@ def reset_logs_for_tests() -> None:
         pass
 
 
+def snapshot_logs() -> dict[str, list[dict[str, Any]]]:
+    """Copy accept/reject/error ledgers (for nested harnesses that must restore)."""
+    return {
+        "accepts": [dict(a) for a in _ACCEPT_LOG],
+        "rejects": [dict(r) for r in _REJECT_LOG],
+        "errors": [dict(e) for e in _ERROR_LOG],
+    }
+
+
+def restore_logs(snap: dict[str, list[dict[str, Any]]] | None) -> None:
+    """Replace ledgers with a prior snapshot (or clear when snap is None)."""
+    _ACCEPT_LOG.clear()
+    _REJECT_LOG.clear()
+    _ERROR_LOG.clear()
+    if not snap:
+        return
+    _ACCEPT_LOG.extend(dict(a) for a in snap.get("accepts") or [])
+    _REJECT_LOG.extend(dict(r) for r in snap.get("rejects") or [])
+    _ERROR_LOG.extend(dict(e) for e in snap.get("errors") or [])
+
+
 def all_axes_have_non_stdlib_accepts() -> bool:
     """True iff invent|reflect|goal|form each have ≥1 non-stdlib accept."""
     axes = set(status().get("axes_with_non_stdlib_accepts") or [])
