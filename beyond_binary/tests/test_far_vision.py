@@ -1132,8 +1132,8 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             self.assertTrue(causes)
             child = causes[0]
             parent = eng.torus.nodes[child.parent]
-            cause, effect = "swembc", "swembe"
-            instance = f"{normalize(cause)}-{normalize(effect)}"
+            cause, effect = "open", "closed"
+            instance = f"search-wedge-g11embody"
             edit = {
                 "kind": "edit_ast",
                 "ast": [
@@ -1177,6 +1177,222 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             out = fn()
             self.assertEqual(out["capability"], "interpret_program")
             self.assertIn("invent_wedge_span", out.get("result") or {})
+
+
+class ReadableSearchInventGateTests(unittest.TestCase):
+    """#1 product advance: readable poles + score gate + Null-vs-search meet-or-exceed."""
+
+    PROBES = ("water", "boiling", "warm")
+
+    def test_search_invent_asts_no_digest_poles(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import search_substrate as search_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
+        rows = search_mod.search_invent_asts(eng, limit=6)
+        self.assertTrue(rows, msg="expected at least one search invent candidate")
+        for row in rows:
+            for pole in (row.get("cause"), row.get("effect")):
+                self.assertFalse(
+                    search_mod.looks_like_digest_pole(str(pole)),
+                    msg=f"digest pole minted: {pole!r} in {row}",
+                )
+            self.assertFalse(
+                search_mod.rejects_digest_poles(list(row.get("ast") or [])),
+                msg=f"digest poles in ast: {row}",
+            )
+            # Digests may appear as instance ids only.
+            self.assertTrue(str(row.get("instance", "")).startswith(("search-", "rehang-")))
+
+    def test_validate_rejects_digest_pole_proposals(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary.substrate import Proposal
+
+        eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
+        causes = [
+            n
+            for n in eng.torus.nodes.values()
+            if n.hemisphere is Hemisphere.CAUSE and n.opposite and n.parent
+        ]
+        child = causes[0]
+        parent = eng.torus.nodes[child.parent]
+        bad = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "wedge",
+                    "parent": parent.name,
+                    "child": child.name,
+                    "cause": "swabcdef12c",
+                    "effect": "swabcdef12e",
+                }
+            ],
+            "cause": "swabcdef12c",
+            "effect": "swabcdef12e",
+            "instance": "search-wedge-deadbeef",
+        }
+        sub = search_mod.SearchSubstrate()
+        result = sub.validate(
+            Proposal(
+                axis="invent",
+                payload=bad,
+                provenance="search-substrate:invent:test-digest",
+            ),
+            eng,
+        )
+        self.assertFalse(result.accepted)
+        self.assertIn("digest", result.reason.lower())
+
+    def test_quality_gate_rejects_worsening_unused_cost(self):
+        from beyond_binary.center import StructuralScore
+        from beyond_binary import invent as invent_mod
+
+        before = StructuralScore(
+            dual_coverage=1.0, link_symmetry=1.0, unused_path_cost=0.0, node_count=10
+        )
+        worse = StructuralScore(
+            dual_coverage=1.0, link_symmetry=1.0, unused_path_cost=2.0, node_count=12
+        )
+        self.assertFalse(invent_mod.search_edit_score_acceptable(before, worse))
+
+    def test_quality_gate_allows_node_growth_when_structure_holds(self):
+        from beyond_binary.center import StructuralScore
+        from beyond_binary import invent as invent_mod
+
+        before = StructuralScore(
+            dual_coverage=1.0, link_symmetry=1.0, unused_path_cost=0.0, node_count=10
+        )
+        grown = StructuralScore(
+            dual_coverage=1.0, link_symmetry=1.0, unused_path_cost=0.0, node_count=14
+        )
+        self.assertTrue(invent_mod.search_edit_score_acceptable(before, grown))
+        self.assertFalse(grown.better_than(before))  # node growth alone is not better_than
+
+    def test_invent_and_embody_rejects_non_improving_logged(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
+            store.save(eng.torus, mind_path)
+            # Alias-duplicate invent raises unused_path_cost → score gate rejects.
+            causes = [
+                n
+                for n in eng.torus.nodes.values()
+                if n.hemisphere is Hemisphere.CAUSE and n.opposite and n.parent
+            ]
+            child = causes[0]
+            parent = eng.torus.nodes[child.parent]
+            # "boil"/"freeze" are aliases of boiling/freezing → alias_dup pressure.
+            cause, effect = "boil", "freeze"
+            instance = "search-wedge-aliasdup"
+            edit = {
+                "kind": "edit_ast",
+                "ast": [
+                    {
+                        "op": "wedge",
+                        "parent": parent.name,
+                        "child": child.name,
+                        "cause": cause,
+                        "effect": effect,
+                    }
+                ],
+            }
+            reg = invent_mod.load_invent_registry(mind_path)
+            reg.candidates.insert(
+                0,
+                invent_mod.InventCandidate(
+                    cause=cause,
+                    effect=effect,
+                    instance=instance,
+                    source="search",
+                    why="test:alias-dup",
+                    edit=edit,
+                    priority=99.0,
+                ),
+            )
+            invent_mod.save_invent_registry(reg, mind_path)
+            nodes_before = set(eng.torus.nodes)
+            result = invent_mod.invent_and_embody(eng, mind_path, cycle=1)
+            # Either rejected this candidate (and maybe applied another), or returned None.
+            activity = store.load_activity(mind_path)
+            rejects = [a for a in activity if a.get("act") == "search_invent_reject"]
+            self.assertTrue(rejects, msg="expected score-gate reject log")
+            self.assertTrue(
+                any(r.get("instance") == instance for r in rejects),
+                msg=f"rejects={rejects}",
+            )
+            # Alias-dup wedge must not remain applied on the mind torus.
+            if cause in eng.torus.nodes or effect in eng.torus.nodes:
+                self.fail("alias-duplicate digest-like invent should not stick on mind")
+            # If a later readable invent applied, mind may grow — that's fine.
+            _ = result, nodes_before
+
+    def test_null_vs_search_meet_or_exceed_on_probes(self):
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import search_substrate as search_mod
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        def _run(path: Path, *, use_search: bool):
+            eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+            store.save(eng.torus, path)
+            center = LivingCenter(eng)
+            center.mind_store = path
+            center.think(6)
+            if use_search:
+                os.environ[substrate_mod.ENV_FLAG] = "search"
+                try:
+                    substrate_mod.reset_logs_for_tests()
+                    # Apply one readable search invent under the quality gate.
+                    invent_mod.invent_and_embody(eng, path, cycle=1)
+                finally:
+                    os.environ.pop(substrate_mod.ENV_FLAG, None)
+                    substrate_mod.reset_logs_for_tests()
+            score = LivingCenter(eng).score()
+            probe_ok = {}
+            digest_hits = 0
+            for topic in self.PROBES:
+                if not eng.exists(topic):
+                    probe_ok[topic] = None
+                    continue
+                dual = eng.answer(topic)
+                path_names = []
+                for p in list(dual.cause_paths) + list(dual.effect_paths):
+                    path_names.extend(p if isinstance(p, (list, tuple)) else [p])
+                flat = [normalize(str(x)) for x in path_names]
+                digest_hits += sum(1 for n in flat if search_mod.looks_like_digest_pole(n))
+                probe_ok[topic] = bool(dual.cause_paths and dual.effect_paths)
+            return score, probe_ok, digest_hits, set(eng.torus.nodes)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            null_score, null_probes, null_digests, _null_names = _run(
+                Path(tmp) / "null.json", use_search=False
+            )
+            search_score, search_probes, search_digests, search_names = _run(
+                Path(tmp) / "search.json", use_search=True
+            )
+
+            self.assertEqual(null_digests, 0)
+            self.assertEqual(search_digests, 0)
+            self.assertGreaterEqual(search_score.dual_coverage, null_score.dual_coverage)
+            self.assertGreaterEqual(search_score.link_symmetry, null_score.link_symmetry)
+            self.assertLessEqual(search_score.unused_path_cost, null_score.unused_path_cost + 1e-9)
+            for topic in self.PROBES:
+                if null_probes.get(topic):
+                    self.assertTrue(
+                        search_probes.get(topic),
+                        msg=f"search lost answerability for {topic}: {search_probes}",
+                    )
+            # Readable invent should not inject digest poles into the product graph.
+            for name in search_names:
+                self.assertFalse(
+                    search_mod.looks_like_digest_pole(name),
+                    msg=f"digest pole on search mind: {name}",
+                )
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 from typing import Any
 
 from .engine import (
@@ -68,8 +69,135 @@ def _digest(*parts: str, n: int = 8) -> str:
     return h[:n]
 
 
+# Opaque search invent poles: sw{hex}… / sc{hex}… / more-sw… / more-sc…
+_DIGEST_POLE_RE = re.compile(
+    r"^(?:more-)?(?:sw|sc)[0-9a-f]{4,}[a-z0-9]*$",
+    re.IGNORECASE,
+)
+
+
+def looks_like_digest_pole(name: str) -> bool:
+    """True when a pole label is an opaque sw/sc digest (not human-readable)."""
+    return bool(_DIGEST_POLE_RE.match(normalize(name)))
+
+
 def _clone_engine(eng: Engine) -> Engine:
     return Engine(Torus.from_dict(copy.deepcopy(eng.torus.to_dict())))
+
+
+def _occupied_names(eng: Engine, reserved: set[str] | None = None) -> set[str]:
+    names = {normalize(n) for n in eng.torus.nodes}
+    if reserved:
+        names |= {normalize(x) for x in reserved}
+    return names
+
+
+def _readable_dual_pool(eng: Engine, reserved: set[str] | None = None) -> list[tuple[str, str]]:
+    """Unused readable antonym pairs: lexicon aliases, cascade poles, invent motifs."""
+    from . import invent as invent_mod
+    from . import lexicon as lex
+
+    occupied = _occupied_names(eng, reserved)
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _take(cause: str, effect: str) -> None:
+        c, e = cause.strip(), effect.strip()
+        if not c or not e:
+            return
+        if looks_like_digest_pole(c) or looks_like_digest_pole(e):
+            return
+        if is_bit_collapse_topic(c) or is_bit_collapse_topic(e):
+            return
+        key = (normalize(c), normalize(e))
+        rev = (normalize(e), normalize(c))
+        if key in seen or rev in seen:
+            return
+        if key[0] in occupied or key[1] in occupied:
+            return
+        if normalize(c) == normalize(e):
+            return
+        seen.add(key)
+        out.append((c, e))
+
+    # 1) Unused lexicon alias antonyms under known duals (paired group order).
+    for node in eng.torus.nodes.values():
+        if node.hemisphere is not Hemisphere.CAUSE or not node.opposite:
+            continue
+        opp = eng.torus.nodes.get(node.opposite)
+        if opp is None:
+            continue
+        cause_group = effect_group = None
+        for group in lex.alias_groups():
+            gset = {normalize(g) for g in group}
+            if normalize(node.name) in gset:
+                cause_group = group
+            if normalize(opp.name) in gset:
+                effect_group = group
+        if not cause_group or not effect_group:
+            continue
+        unused_c = [
+            a
+            for a in cause_group
+            if normalize(a) not in occupied and normalize(a) != normalize(node.name)
+        ]
+        unused_e = [
+            a
+            for a in effect_group
+            if normalize(a) not in occupied and normalize(a) != normalize(opp.name)
+        ]
+        for c_alias, e_alias in zip(unused_c, unused_e):
+            _take(c_alias, e_alias)
+
+    # 2) Cascade entries whose poles are still free (parents may already exist).
+    existing = {n for n in eng.torus.nodes}
+    parents = set(existing)
+    for entry in lex.pending_expansions(existing, parent_names=parents):
+        _take(entry.cause, entry.effect)
+    # Also surface cascade poles even when parents are missing — names still readable.
+    for entry in lex.all_cascades():
+        _take(entry.cause, entry.effect)
+
+    # 3) Concept / invent motifs — seed INVENTABLE duals unused on this torus.
+    for cause, effect, _instance in invent_mod.INVENTABLE:
+        _take(cause, effect)
+
+    return out
+
+
+def mint_readable_dual(
+    eng: Engine,
+    *,
+    reserved: set[str] | None = None,
+    salt: str = "",
+) -> tuple[str, str] | None:
+    """Pick one unused readable cause/effect pair; None if the pool is exhausted."""
+    pool = _readable_dual_pool(eng, reserved)
+    if not pool:
+        return None
+    if salt:
+        # Deterministic rotate so wedge/chain under different sites diverge.
+        idx = int(_digest(salt, n=8), 16) % len(pool)
+        pool = pool[idx:] + pool[:idx]
+    return pool[0]
+
+
+def edit_ast_poles(ast: list[dict[str, Any]]) -> list[str]:
+    """Collect cause/effect pole labels minted or referenced by an edit AST."""
+    poles: list[str] = []
+    for step in ast:
+        if not isinstance(step, dict):
+            continue
+        for key in ("cause", "effect"):
+            val = step.get(key)
+            if val:
+                poles.append(str(val))
+    return poles
+
+
+def rejects_digest_poles(ast: list[dict[str, Any]]) -> bool:
+    """True when any minted/referenced pole looks like an sw/sc digest."""
+    return any(looks_like_digest_pole(p) for p in edit_ast_poles(ast))
 
 
 def _resolve_engine(center: Any) -> Engine | None:
@@ -186,8 +314,14 @@ def search_invent_asts(
     used_instances: set[str] | None = None,
     limit: int = 4,
 ) -> list[dict[str, Any]]:
-    """Open combinatorial invent search: edit ASTs beyond bridge/reparent."""
+    """Open combinatorial invent search: edit ASTs beyond bridge/reparent.
+
+    Cause/effect poles are human-readable duals (lexicon aliases, cascade
+    unused poles, invent motifs). Digests may appear only in instance ids.
+    Proposals with sw/sc digest poles are never emitted.
+    """
     used = {normalize(x) for x in (used_instances or ())}
+    reserved: set[str] = set()
     causes = [
         n
         for n in eng.torus.nodes.values()
@@ -202,11 +336,16 @@ def search_invent_asts(
         parent = eng.torus.nodes[node.parent]
         if parent.hemisphere is not Hemisphere.CAUSE or not parent.opposite:
             continue
-        label = _digest("wedge", normalize(node.name), normalize(parent.name), str(len(eng.torus.nodes)))
-        cause = f"sw{label}c"
-        effect = f"sw{label}e"
-        instance = f"{normalize(cause)}-{normalize(effect)}"
+        salt = f"wedge|{normalize(node.name)}|{normalize(parent.name)}"
+        pair = mint_readable_dual(eng, reserved=reserved, salt=salt)
+        if pair is None:
+            break
+        cause, effect = pair
+        dig = _digest("wedge", normalize(node.name), normalize(parent.name), cause, effect)
+        instance = f"search-wedge-{dig}"
         if normalize(instance) in used:
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
             continue
         ast = [
             {
@@ -217,6 +356,10 @@ def search_invent_asts(
                 "effect": effect,
             }
         ]
+        if rejects_digest_poles(ast):
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
+            continue
         trial = _clone_engine(eng)
         if apply_edit_ast(trial, ast):
             out.append(
@@ -230,8 +373,13 @@ def search_invent_asts(
                 }
             )
             used.add(normalize(instance))
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
             if len(out) >= limit:
                 return out
+        else:
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
 
     # --- Chain search: add_dual then nested add_dual (2-step AST) ---
     dual_pairs = [(c.name, eng.torus.nodes[c.opposite].name) for c in causes[:8]]
@@ -239,11 +387,32 @@ def search_invent_asts(
         for c2, e2 in dual_pairs[i + 1 : i + 4]:
             if normalize(c1) == normalize(c2):
                 continue
-            lab = _digest("chain", normalize(c1), normalize(c2), normalize(e1), normalize(e2))
-            mid_c, mid_e = f"sc{lab}a", f"sc{lab}b"
-            leaf_c, leaf_e = f"sc{lab}c", f"sc{lab}d"
-            instance = f"{normalize(leaf_c)}-{normalize(leaf_e)}"
+            salt_mid = f"chain-mid|{normalize(c1)}|{normalize(c2)}"
+            mid = mint_readable_dual(eng, reserved=reserved, salt=salt_mid)
+            if mid is None:
+                return out
+            mid_c, mid_e = mid
+            reserved_mid = set(reserved) | {normalize(mid_c), normalize(mid_e)}
+            salt_leaf = f"chain-leaf|{normalize(c1)}|{normalize(c2)}|{mid_c}"
+            leaf = mint_readable_dual(eng, reserved=reserved_mid, salt=salt_leaf)
+            if leaf is None:
+                reserved.add(normalize(mid_c))
+                reserved.add(normalize(mid_e))
+                continue
+            leaf_c, leaf_e = leaf
+            dig = _digest(
+                "chain",
+                normalize(c1),
+                normalize(c2),
+                normalize(mid_c),
+                normalize(leaf_c),
+            )
+            instance = f"search-chain-{dig}"
             if normalize(instance) in used:
+                reserved.add(normalize(mid_c))
+                reserved.add(normalize(mid_e))
+                reserved.add(normalize(leaf_c))
+                reserved.add(normalize(leaf_e))
                 continue
             ast = [
                 {
@@ -261,11 +430,16 @@ def search_invent_asts(
                     "effect_parent": mid_e,
                 },
             ]
-            # Mark chain as using a second attachment hint (c2/e2) in why — combinatorial.
             why = (
                 f"search:chain:base={normalize(c1)}/{normalize(e1)},"
                 f"alt={normalize(c2)}/{normalize(e2)}"
             )
+            if rejects_digest_poles(ast):
+                reserved.add(normalize(mid_c))
+                reserved.add(normalize(mid_e))
+                reserved.add(normalize(leaf_c))
+                reserved.add(normalize(leaf_e))
+                continue
             trial = _clone_engine(eng)
             if apply_edit_ast(trial, ast):
                 out.append(
@@ -279,8 +453,17 @@ def search_invent_asts(
                     }
                 )
                 used.add(normalize(instance))
+                reserved.add(normalize(mid_c))
+                reserved.add(normalize(mid_e))
+                reserved.add(normalize(leaf_c))
+                reserved.add(normalize(leaf_e))
                 if len(out) >= limit:
                     return out
+            else:
+                reserved.add(normalize(mid_c))
+                reserved.add(normalize(mid_e))
+                reserved.add(normalize(leaf_c))
+                reserved.add(normalize(leaf_e))
 
     # --- Rehang search: re-attach non-root dual under independently chosen parents ---
     for node in causes:
@@ -288,6 +471,8 @@ def search_invent_asts(
             continue
         opp = eng.torus.nodes.get(node.opposite)
         if opp is None:
+            continue
+        if looks_like_digest_pole(node.name) or looks_like_digest_pole(opp.name):
             continue
         for host in causes:
             if not host.opposite or normalize(host.name) == normalize(node.name):
@@ -310,6 +495,8 @@ def search_invent_asts(
                     "effect_parent": hopp.name,
                 }
             ]
+            if rejects_digest_poles(ast):
+                continue
             trial = _clone_engine(eng)
             if apply_edit_ast(trial, ast):
                 out.append(
@@ -962,11 +1149,17 @@ class SearchSubstrate:
                 return Reject("stdlib topology kind")
             if str(payload.get("kind")) != "edit_ast":
                 return Reject("invent payload must be edit_ast")
+            ast = list(payload.get("ast") or [])
+            if rejects_digest_poles(ast):
+                return Reject("digest poles forbidden as user-facing invent labels")
+            for pole in (payload.get("cause"), payload.get("effect")):
+                if pole and looks_like_digest_pole(str(pole)):
+                    return Reject("digest poles forbidden as user-facing invent labels")
             eng = _resolve_engine(center)
             if eng is None:
                 return Reject("engine required for invent dual validation")
             trial = _clone_engine(eng)
-            if not apply_edit_ast(trial, list(payload.get("ast") or [])):
+            if not apply_edit_ast(trial, ast):
                 return Reject("edit_ast failed dual/I1 validation")
             return Accept("invent edit_ast dual+I1 ok")
 
