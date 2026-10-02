@@ -94,13 +94,44 @@ def run_verification() -> dict[str, Any]:
             f"body={record.store_path} form={record.form_path}",
         )
 
-        # Invented domain (self-authored form)
+        # Invented domain (self-authored form; prefer compose/promote when structure allows)
         invented = mind.invent_domain(eng, thermal, cycle=center._cycle_index)
+        inv = invented.get("invention") or {}
         gate(
             "C4b",
             "Self-invents a domain body not in starter seeds",
             bool(invented.get("invented")),
-            str(invented.get("invention") or invented.get("reason")),
+            str(inv or invented.get("reason")),
+        )
+
+        # Reflective journal reshapes strategy (C3 depth)
+        from . import journal as journal_mod
+
+        j_grow = [
+            journal_mod.JournalEntry(
+                cycle=i,
+                reflection="structure_hungry",
+                signals={"flags": 0},
+                strategy_hint="grow",
+            )
+            for i in range(1, 4)
+        ]
+        j_prune = [
+            journal_mod.JournalEntry(
+                cycle=i,
+                reflection="challenge_pressure",
+                signals={"flags": 1},
+                strategy_hint="prune",
+            )
+            for i in range(1, 4)
+        ]
+        sg = journal_mod.strategy_from_journal(j_grow, max_new_pairs=1)
+        sp = journal_mod.strategy_from_journal(j_prune, max_new_pairs=1)
+        gate(
+            "C3j",
+            "Reflective journal changes strategy (not counters alone)",
+            bool(sg and sp and sg.get("reason") != sp.get("reason")),
+            f"grow={sg and sg.get('reason')} prune={sp and sp.get('reason')}",
         )
 
         # Cross-body synthesize
@@ -142,7 +173,7 @@ def run_verification() -> dict[str, Any]:
             dual_err or "cause+effect paths present",
         )
 
-    required = ["C1", "C2", "C3", "C4", "C4b", "C4c", "C6", "I2"]
+    required = ["C1", "C2", "C3", "C3j", "C4", "C4b", "C4c", "C6", "I2"]
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
@@ -152,8 +183,8 @@ def run_verification() -> dict[str, Any]:
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "System remains rule/lexicon/generative-template bounded. "
-            "Gates C1–C6 prove a Living Center with bodies — not sentience."
+            "System remains rule/lexicon/generative/compose-template bounded. "
+            "Gates prove a Living Center with journal + compositional invent — not sentience."
         ),
     }
     gates.append(sentience)

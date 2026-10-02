@@ -62,6 +62,122 @@ class MetacognitionTests(unittest.TestCase):
         self.assertNotEqual(hungry.reason, stalled.reason)
 
 
+class ReflectiveJournalTests(unittest.TestCase):
+    def test_journal_content_reshapes_strategy(self):
+        from beyond_binary.journal import JournalEntry
+
+        eng = Engine(seed_minimal_hot_cold())
+        grow_center = LivingCenter(eng)
+        grow_center.journal_entries = [
+            JournalEntry(
+                cycle=i,
+                reflection="structure_hungry",
+                signals={"flags": 0, "grow_count": 0},
+                strategy_hint="grow",
+            )
+            for i in range(1, 4)
+        ]
+        grow_strat = grow_center.metacognize([])
+        self.assertTrue(grow_strat.from_journal)
+        self.assertEqual(grow_strat.reason, "journal_structure_hungry")
+        self.assertGreaterEqual(grow_strat.grow_budget, 1)
+        self.assertFalse(grow_strat.prefer_prune)
+
+        eng2 = Engine(seed_minimal_hot_cold())
+        prune_center = LivingCenter(eng2)
+        prune_center.journal_entries = [
+            JournalEntry(
+                cycle=i,
+                reflection="challenge_pressure",
+                signals={"flags": 1, "grow_count": 0},
+                strategy_hint="prune",
+            )
+            for i in range(1, 4)
+        ]
+        prune_strat = prune_center.metacognize([])
+        self.assertTrue(prune_strat.from_journal)
+        self.assertEqual(prune_strat.reason, "journal_challenge_pressure")
+        self.assertTrue(prune_strat.prefer_prune)
+        self.assertEqual(prune_strat.grow_budget, 0)
+        self.assertNotEqual(grow_strat.reason, prune_strat.reason)
+
+    def test_cycle_writes_journal_and_next_strategy_reads_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            center = LivingCenter(eng, history=[])
+            center.mind_store = mind_path
+            center.cycle()
+            from beyond_binary import journal as journal_mod
+
+            rows = journal_mod.load_journal(mind_path)
+            self.assertGreaterEqual(len(rows), 1)
+            self.assertTrue(rows[0].reflection)
+            self.assertTrue(rows[0].strategy_hint)
+            # Second cycle must metacognize from journal (from_journal true).
+            report2 = center.cycle()
+            meta = next(a for a in report2.acts if a.act == "metacognize")
+            self.assertTrue(meta.detail["strategy"].get("from_journal"))
+            reflect = next(a for a in report2.acts if a.act == "reflect")
+            self.assertIn("strategy_hint", reflect.detail)
+
+
+class InventAndSynthesizeTests(unittest.TestCase):
+    def test_invent_and_synthesize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            from beyond_binary import mind as mind_mod
+
+            invented = mind_mod.invent_domain(eng, mind_path, cycle=1)
+            self.assertTrue(invented.get("invented"))
+            syn = mind_mod.synthesize(eng, "hot", mind_path)
+            self.assertTrue(syn.get("ok"))
+            self.assertTrue(any(h["source"] == "mind" for h in syn["hits"]))
+
+    def test_compositional_invent_from_known_structure(self):
+        """Invent must compose from Living Center structure, not only INVENTABLE seed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            # Second domain body supplies another opposite pair for composition.
+            bodies.embody(
+                eng, name="ont-body", domain="ontology", mind_store=mind_path
+            )
+            from beyond_binary import invent as invent_mod
+            from beyond_binary import mind as mind_mod
+
+            # Mark every seed catalog entry used so seed path cannot satisfy.
+            registry = invent_mod.InventRegistry(
+                candidates=[
+                    invent_mod.InventCandidate(
+                        cause=c, effect=e, instance=inst, source="seed", used=True
+                    )
+                    for c, e, inst in invent_mod.INVENTABLE
+                ]
+            )
+            invent_mod.save_invent_registry(registry, mind_path)
+
+            proposal = invent_mod.next_invention(eng, mind_path)
+            self.assertIsNotNone(proposal)
+            self.assertIn(proposal.source, {"compose", "promote"})
+            # Composed poles are built from known structure tokens.
+            if proposal.source == "compose":
+                self.assertIn("-", proposal.cause)
+                self.assertIn("-", proposal.effect)
+
+            invented = mind_mod.invent_domain(eng, mind_path, cycle=2)
+            self.assertTrue(invented.get("invented"))
+            self.assertIn(
+                invented["invention"]["source"], {"compose", "promote"}
+            )
+            # Dynamic invent registry persisted.
+            self.assertTrue(invent_mod.invent_registry_path(mind_path).exists())
+
+
 class EmbodyTests(unittest.TestCase):
     def test_embody_creates_registered_body(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,21 +268,6 @@ class GenerativeGrowthTests(unittest.TestCase):
             self.assertIn("generative", sources)
             # Fixed thermal cascade alone cannot explain more-* nodes.
             self.assertGreater(len(names), 10)
-
-
-class InventAndSynthesizeTests(unittest.TestCase):
-    def test_invent_and_synthesize(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            mind_path = Path(tmp) / "mind.json"
-            eng = Engine(seed_minimal_hot_cold())
-            store.save(eng.torus, mind_path)
-            from beyond_binary import mind as mind_mod
-
-            invented = mind_mod.invent_domain(eng, mind_path, cycle=1)
-            self.assertTrue(invented.get("invented"))
-            syn = mind_mod.synthesize(eng, "hot", mind_path)
-            self.assertTrue(syn.get("ok"))
-            self.assertTrue(any(h["source"] == "mind" for h in syn["hits"]))
 
 
 class LiveAutonomyTests(unittest.TestCase):

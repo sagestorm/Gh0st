@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .engine import Engine, RuleError, normalize
-from . import lexicon
+from . import journal, lexicon
 from .model import CenterAction, Hemisphere, Node
 
 
@@ -81,12 +81,13 @@ class StructuralScore:
 
 @dataclass
 class Strategy:
-    """Metacognitive bias derived from center activity history."""
+    """Metacognitive bias derived from reflective journal + activity history."""
 
     grow_budget: int = MAX_NEW_PAIRS_PER_CYCLE
     prefer_prune: bool = False
     prefer_migrate: bool = False
     reason: str = "default"
+    from_journal: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,7 +95,18 @@ class Strategy:
             "prefer_prune": self.prefer_prune,
             "prefer_migrate": self.prefer_migrate,
             "reason": self.reason,
+            "from_journal": self.from_journal,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Strategy":
+        return cls(
+            grow_budget=int(data.get("grow_budget", MAX_NEW_PAIRS_PER_CYCLE) or 0),
+            prefer_prune=bool(data.get("prefer_prune", False)),
+            prefer_migrate=bool(data.get("prefer_migrate", False)),
+            reason=str(data.get("reason", "default")),
+            from_journal=bool(data.get("from_journal", False)),
+        )
 
 
 class LivingCenter:
@@ -113,8 +125,9 @@ class LivingCenter:
         self.max_nodes_soft_cap = max_nodes_soft_cap
         self._cycle_index = 0
         self.activity: list[dict[str, Any]] = []
+        self.journal_entries: list[journal.JournalEntry] = []
         self.strategy = Strategy(grow_budget=max_new_pairs_per_cycle)
-        self.mind_store: Any = None  # optional path for learned/body persistence
+        self.mind_store: Any = None  # optional path for learned/body/journal persistence
         if history:
             self.sync_cycle_index(history)
             self.strategy = self.metacognize(history)
@@ -133,8 +146,32 @@ class LivingCenter:
                 continue
         self._cycle_index = max_cycle
 
+    def load_journal(self) -> list[journal.JournalEntry]:
+        """Merge persisted journal with in-memory reflections."""
+        loaded: list[journal.JournalEntry] = []
+        if self.mind_store is not None:
+            loaded = journal.load_journal(self.mind_store)
+        # Prefer in-memory if newer / longer; else union by cycle.
+        by_cycle: dict[int, journal.JournalEntry] = {
+            e.cycle: e for e in loaded
+        }
+        for entry in self.journal_entries:
+            by_cycle[entry.cycle] = entry
+        return [by_cycle[k] for k in sorted(by_cycle)]
+
     def metacognize(self, history: list[dict[str, Any]] | None = None) -> Strategy:
-        """Read center log and change grow/prune/migrate bias (Phase 4)."""
+        """Reflective journal first; fall back to raw activity history (Phase 4+)."""
+        journal_rows = self.load_journal()
+        from_j = journal.strategy_from_journal(
+            journal_rows,
+            max_new_pairs=self.max_new_pairs_per_cycle,
+            soft_cap=self.max_nodes_soft_cap,
+            node_count=len(self.engine.torus.nodes),
+        )
+        if from_j is not None:
+            self.strategy = Strategy.from_dict(from_j)
+            return self.strategy
+
         rows = history if history is not None else self.activity
         if not rows:
             self.strategy = Strategy(
@@ -272,7 +309,25 @@ class LivingCenter:
 
         report.nodes_after = len(self.engine.torus.nodes)
         report.score_after = self.score().to_dict()
-        self.activity.append(report.to_dict())
+        report_dict = report.to_dict()
+        self.activity.append(report_dict)
+        # Reflective journal: interpret the cycle, persist, reshape next strategy.
+        entry = journal.reflect_on_report(report_dict)
+        self.journal_entries.append(entry)
+        report.acts.append(
+            ActRecord(
+                "reflect",
+                {
+                    "reflection": entry.reflection,
+                    "strategy_hint": entry.strategy_hint,
+                    "signals": entry.signals,
+                },
+            )
+        )
+        # Keep activity row in sync with reflect act for persisted logs.
+        self.activity[-1] = report.to_dict()
+        if self.mind_store is not None:
+            journal.append_journal([entry], self.mind_store)
         return report
 
     def think(self, steps: int) -> list[CycleReport]:

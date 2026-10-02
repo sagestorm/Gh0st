@@ -73,5 +73,8 @@ def nurture(mind_store, *, steps: int = 1) -> dict[str, Any]:
 def invent_domain(mind: Engine, mind_store, *, cycle: int | None = None) -> dict[str, Any]:
     result = invent.invent_and_embody(mind, mind_store, cycle=cycle)
     if result is None:
-        return {"invented": False, "reason": "no unused inventable domains"}
+        return {
+            "invented": False,
+            "reason": "no unused composed/promoted/seed domains",
+        }
     return {"invented": True, **result}
