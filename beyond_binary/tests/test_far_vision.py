@@ -1123,23 +1123,19 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
             store.save(eng.torus, mind_path)
             reg = invent_mod.load_invent_registry(mind_path)
-            # Off-probe ontology wedge (#7): nothing→void is not on PRODUCT_PROBES spines.
-            self.assertTrue(
-                eng.exists("void") and eng.torus.nodes["void"].parent == "nothing",
-                msg="expected nothing→void off-probe site",
-            )
-            parent_name, child_name = "nothing", "void"
+            # #8: path-neutral root add_dual (on-spine wedges are rejected).
+            self.assertTrue(eng.exists("nothing") and eng.torus.nodes["nothing"].parent is None)
             cause, effect = "latent", "manifest"
-            instance = "search-wedge-g11embody"
+            instance = "search-add-g11embody"
             edit = {
                 "kind": "edit_ast",
                 "ast": [
                     {
-                        "op": "wedge",
-                        "parent": parent_name,
-                        "child": child_name,
+                        "op": "add_dual",
                         "cause": cause,
                         "effect": effect,
+                        "cause_parent": "nothing",
+                        "effect_parent": "something",
                     }
                 ],
             }
@@ -1150,7 +1146,7 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
                     effect=effect,
                     instance=instance,
                     source="search",
-                    why="test:wedge",
+                    why="test:add_dual",
                     edit=edit,
                     priority=99.0,
                 ),
@@ -1160,20 +1156,19 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             self.assertIsNotNone(result)
             body = result["body"]
             prog = capability_mod.load_program(body["store_path"])
-            self.assertIn("prim_invent_wedge_span", prog.primitives)
-            self.assertEqual(
-                prog.primitives["prim_invent_wedge_span"].get("invent_ops"), "wedge"
+            # Single add_dual body still carries invent-coupled specialty.
+            self.assertTrue(
+                any(k.startswith("prim_invent_") for k in prog.primitives),
+                msg=f"expected invent prim, got {list(prog.primitives)}",
             )
             body_eng = Engine(store.load(body["store_path"]))
             body_eng.assert_no_orphans()
-            # Embodied body is not a flat 2-node seed_custom for wedge invent.
-            self.assertGreaterEqual(len(body_eng.torus.nodes), 4)
+            self.assertGreaterEqual(len(body_eng.torus.nodes), 2)
             _, fn = bodies.load_form_specialty(
                 bodies.BodyRecord.from_dict(body)
             )
             out = fn()
             self.assertEqual(out["capability"], "interpret_program")
-            self.assertIn("invent_wedge_span", out.get("result") or {})
 
 
 class ReadableSearchInventGateTests(unittest.TestCase):
@@ -1719,22 +1714,22 @@ class DomainCoherentInventTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "domain_probe_path")
 
-    def test_trial_allows_thermal_domain_matched_wedge(self):
+    def test_trial_allows_path_neutral_root_add_dual(self):
+        """#8: root leaf add_dual does not lengthen cascade probes."""
         from beyond_binary.seed import seed_same_center
         from beyond_binary import invent as invent_mod
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6)
-        # Off-probe site under expanded PRODUCT_PROBES (#7): nothing→void.
         edit = {
             "kind": "edit_ast",
             "ast": [
                 {
-                    "op": "wedge",
-                    "parent": "nothing",
-                    "child": "void",
+                    "op": "add_dual",
                     "cause": "latent",
                     "effect": "manifest",
+                    "cause_parent": "nothing",
+                    "effect_parent": "something",
                 }
             ],
         }
@@ -1764,6 +1759,33 @@ class DomainCoherentInventTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "probe_path_len")
 
+    def test_trial_rejects_empty_cascade_probe_lengthening(self):
+        """#8: invent cannot lengthen empty once it is a present cascade probe."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(8)
+        self.assertTrue(eng.exists("empty"))
+        self.assertIn("empty", invent_mod.product_probes_for(eng))
+        before = invent_mod._probe_answer_path_len(eng, "empty")
+        self.assertEqual(before, 4)
+        edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "wedge",
+                    "parent": "nothing",
+                    "child": "empty",
+                    "cause": "latent",
+                    "effect": "manifest",
+                }
+            ],
+        }
+        ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "probe_path_len")
+
     def test_trial_rejects_optical_probe_path_lengthening(self):
         """#7: invent cannot lengthen bright even when thermal probes stay flat."""
         import tempfile
@@ -1777,7 +1799,7 @@ class DomainCoherentInventTests(unittest.TestCase):
             store.save(eng.torus, mind)
             center = LivingCenter(eng)
             center.mind_store = mind
-            center.think(6)
+            center.think(8)
             self.assertTrue(eng.exists("bright"))
             edit = {
                 "kind": "edit_ast",
@@ -1794,6 +1816,19 @@ class DomainCoherentInventTests(unittest.TestCase):
             ok, _pre, _post, reason = invent_mod._trial_search_edit(eng, edit)
             self.assertFalse(ok)
             self.assertEqual(reason, "probe_path_len")
+
+    def test_product_probes_for_includes_present_cascade(self):
+        """#8: dynamic probes include present cascade poles beyond the fixed 6-tuple."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(8)
+        probes = invent_mod.product_probes_for(eng)
+        self.assertIn("empty", probes)
+        self.assertIn("void", probes)
+        self.assertIn("water", probes)
+        self.assertTrue(set(probes) - set(invent_mod.PRODUCT_PROBES))
 
     def test_mint_under_typed_parent_skips_undomain(self):
         from beyond_binary.seed import seed_same_center
@@ -1827,7 +1862,7 @@ class DomainCoherentInventTests(unittest.TestCase):
                 center = LivingCenter(eng)
                 center.mind_store = mind
                 center.think(8)
-                for topic in invent_mod.PRODUCT_PROBES:
+                for topic in invent_mod.product_probes_for(eng):
                     if not eng.exists(topic):
                         continue
                     dual = eng.answer(topic)
@@ -1854,6 +1889,41 @@ class DomainCoherentInventTests(unittest.TestCase):
             finally:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
                 substrate_mod.reset_logs_for_tests()
+
+
+class DynamicCascadeProbeTests(unittest.TestCase):
+    """#8: scoreboard + verify use live cascade probes; fail-closed default."""
+
+    def test_scoreboard_uses_dynamic_probe_set(self):
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import invent as invent_mod
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        probes = report["probes"]
+        self.assertTrue(probes)
+        # Dynamic set is broader than the historical fixed 6-tuple when cascade grown.
+        self.assertGreaterEqual(len(probes), len(invent_mod.PRODUCT_PROBES))
+        self.assertIn("void", probes)
+        # Per-probe path lengths must not regress vs Null.
+        for topic in probes:
+            n_len = (report["null"]["probes"].get(topic) or {}).get("path_len")
+            s_len = (report["search"]["probes"].get(topic) or {}).get("path_len")
+            if n_len is not None and s_len is not None:
+                self.assertLessEqual(int(s_len), int(n_len), msg=topic)
+
+    def test_verify_default_fail_closed(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import verify
+
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        substrate_mod.reset_logs_for_tests()
+        report = verify.run_verification()
+        self.assertFalse(report["complete"])
+        by_id = {g["id"]: g for g in report["gates"]}
+        self.assertFalse(by_id["SENTIENCE"]["ok"])
+        self.assertTrue(by_id["P1"]["ok"], msg=by_id["P1"]["evidence"])
 
 
 if __name__ == "__main__":

@@ -20,7 +20,8 @@ from . import search_substrate as search_mod
 from . import store
 from . import substrate as substrate_mod
 
-DEFAULT_PROBES: tuple[str, ...] = invent_mod.PRODUCT_PROBES
+# None → derive live cascade probes per arm via invent.product_probes_for.
+DEFAULT_PROBES: tuple[str, ...] | None = None
 DEFAULT_DOMAINS: tuple[str, ...] = ("thermal", "ontology", "optical")
 DEFAULT_THINK_STEPS = 6
 
@@ -113,13 +114,15 @@ def _run_arm(
     use_search: bool,
     domains: tuple[str, ...],
     think_steps: int,
-    probes: tuple[str, ...],
+    probes: tuple[str, ...] | None,
 ) -> dict[str, Any]:
     eng = Engine(seed_same_center(domains, minimal=True))
     store.save(eng.torus, path)
     center = LivingCenter(eng)
     center.mind_store = path
     center.think(think_steps)
+    # #8: freeze dynamic probes after think (before invent) so Null/search share a set.
+    live_probes = probes if probes is not None else invent_mod.product_probes_for(eng)
     invent_applied = False
     invent_instance = None
     invent_provenance = None
@@ -143,11 +146,12 @@ def _run_arm(
             else:
                 os.environ[substrate_mod.ENV_FLAG] = prev
             substrate_mod.reset_logs_for_tests()
-    snap = _snapshot(eng, probes)
+    snap = _snapshot(eng, live_probes)
     snap["invent_applied"] = invent_applied
     snap["invent_instance"] = invent_instance
     snap["invent_provenance"] = invent_provenance
     snap["substrate"] = "search" if use_search else "null"
+    snap["probe_topics"] = list(live_probes)
     return snap
 
 
@@ -251,7 +255,7 @@ def run_scoreboard(
     *,
     domains: tuple[str, ...] = DEFAULT_DOMAINS,
     think_steps: int = DEFAULT_THINK_STEPS,
-    probes: tuple[str, ...] = DEFAULT_PROBES,
+    probes: tuple[str, ...] | None = DEFAULT_PROBES,
     root: Path | None = None,
 ) -> dict[str, Any]:
     """Run isolated Null vs search arms; return comparative product report."""
@@ -270,15 +274,19 @@ def run_scoreboard(
             think_steps=think_steps,
             probes=probes,
         )
+        # Share Null's live cascade probe set with search for fair path-economy.
+        shared_probes = tuple(null_arm.get("probe_topics") or ())
+        if probes is not None:
+            shared_probes = probes
         search_arm = _run_arm(
             root / "search.json",
             use_search=True,
             domains=domains,
             think_steps=think_steps,
-            probes=probes,
+            probes=shared_probes,
         )
         ok, regressions = evaluate_meet_or_exceed(
-            null_arm, search_arm, probes=probes
+            null_arm, search_arm, probes=shared_probes
         )
         # Drop bulky name lists from default report (kept for debugging via flag).
         null_public = {k: v for k, v in null_arm.items() if k != "node_names"}
@@ -287,7 +295,7 @@ def run_scoreboard(
             "ok": ok,
             "meet_or_exceed": ok,
             "regressions": regressions,
-            "probes": list(probes),
+            "probes": list(shared_probes),
             "domains": list(domains),
             "think_steps": think_steps,
             "null": null_public,

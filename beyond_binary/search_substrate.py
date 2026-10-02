@@ -402,12 +402,12 @@ def search_invent_asts(
     ]
     out: list[dict[str, Any]] = []
 
-    # #6/#7: prefer wedge sites off measured product-probe spines so invent
-    # does not lengthen water/boiling/warm/steam/absence/bright paths by default.
+    # #6/#7/#8: prefer path-neutral invent (root leaf add_dual / off-cascade)
+    # over wedges that lengthen any present cascade probe path.
     from . import invent as invent_mod
 
     probe_spine: set[str] = set()
-    for topic in invent_mod.PRODUCT_PROBES:
+    for topic in invent_mod.product_probes_for(eng):
         if not eng.exists(topic):
             continue
         try:
@@ -424,6 +424,60 @@ def search_invent_asts(
             else:
                 probe_spine.add(normalize(str(p)))
 
+    # --- Root leaf add_dual (path-neutral): new dual under a root pair ---
+    root_causes = [
+        n for n in causes if n.parent is None and n.opposite in eng.torus.nodes
+    ]
+    for parent in sorted(root_causes, key=lambda n: normalize(n.name)):
+        opp = eng.torus.nodes[parent.opposite]
+        parent_domain = node_domain(eng, parent.name)
+        salt = f"root-leaf|{normalize(parent.name)}"
+        pair = mint_readable_dual(
+            eng, reserved=reserved, salt=salt, require_domain=parent_domain
+        )
+        if pair is None:
+            continue
+        cause, effect = pair
+        dig = _digest("root-leaf", normalize(parent.name), cause, effect)
+        instance = f"search-add-{dig}"
+        if normalize(instance) in used:
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
+            continue
+        ast = [
+            {
+                "op": "add_dual",
+                "cause": cause,
+                "effect": effect,
+                "cause_parent": parent.name,
+                "effect_parent": opp.name,
+            }
+        ]
+        if rejects_digest_poles(ast):
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
+            continue
+        trial = _clone_engine(eng)
+        if apply_edit_ast(trial, ast):
+            out.append(
+                {
+                    "kind": "edit_ast",
+                    "ast": ast,
+                    "cause": cause,
+                    "effect": effect,
+                    "instance": instance,
+                    "why": f"search:add_dual:under={normalize(parent.name)}/{normalize(opp.name)}",
+                }
+            )
+            used.add(normalize(instance))
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
+            if len(out) >= limit:
+                return out
+        else:
+            reserved.add(normalize(cause))
+            reserved.add(normalize(effect))
+
     wedge_sites = []
     for node in causes:
         if not node.parent or node.parent not in eng.torus.nodes:
@@ -439,7 +493,10 @@ def search_invent_asts(
     wedge_sites.sort(key=lambda row: (row[0], normalize(row[1].name), normalize(row[2].name)))
 
     # --- Wedge search: insert dual between parent→child ---
+    # #8: skip on-spine wedges — they lengthen present cascade probes.
     for _spine_rank, parent, node in wedge_sites:
+        if _spine_rank:
+            continue
         parent_domain = node_domain(eng, parent.name)
         salt = f"wedge|{normalize(node.name)}|{normalize(parent.name)}"
         pair = mint_readable_dual(
