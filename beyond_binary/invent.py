@@ -443,6 +443,34 @@ def primitive_candidates(
     return out
 
 
+def concept_candidates(
+    eng: Engine,
+    registry_bodies: Iterable[dict],
+    *,
+    used_instances: set[str] | None = None,
+    limit: int = 3,
+) -> list[InventCandidate]:
+    """Structural concept formation — preferred over pressure-suffix primitives."""
+    from . import concepts as concepts_mod
+
+    alphabet = closed_invent_alphabet(eng, registry_bodies)
+    used_inst = set(used_instances or ())
+    out: list[InventCandidate] = []
+    for proposal in concepts_mod.form_concepts(
+        eng, alphabet=alphabet, used_instances=used_inst, limit=limit
+    ):
+        out.append(
+            InventCandidate(
+                cause=proposal.cause,
+                effect=proposal.effect,
+                instance=proposal.instance,
+                source="concept",
+                why=proposal.why,
+            )
+        )
+    return out
+
+
 def refresh_invent_registry(
     eng: Engine,
     mind_store,
@@ -480,7 +508,8 @@ def refresh_invent_registry(
     existing_keys = {normalize(c.instance) for c in registry.candidates}
 
     for cand in (
-        primitive_candidates(
+        concept_candidates(eng, body_dicts, used_instances=used_instances)
+        + primitive_candidates(
             eng,
             body_dicts,
             activity=activity,
@@ -518,13 +547,13 @@ def next_invention(
     used_instances = already_used_instances(eng, body_dicts)
     alphabet = closed_invent_alphabet(eng, body_dicts)
 
-    # Prefer primitive (open) → compose → promote → seed.
-    order = {"primitive": 0, "compose": 1, "promote": 2, "seed": 3}
+    # Prefer concept (structural) → primitive → compose → promote → seed.
+    order = {"concept": 0, "primitive": 1, "compose": 2, "promote": 3, "seed": 4}
     unused = [c for c in registry.candidates if not c.used]
     unused.sort(key=lambda c: order.get(c.source, 9))
 
     for cand in unused:
-        if cand.source == "primitive":
+        if cand.source in {"primitive", "concept"}:
             if (
                 normalize(cand.cause) in alphabet
                 or normalize(cand.effect) in alphabet
@@ -604,7 +633,7 @@ def invent_and_embody(
         created_from_cycle=cycle,
         parent_body=parent_body,
     )
-    form_path = bodies.write_form_module(record, mind_path)
+    form_path = bodies.write_form_module(record, mind_path, engine=body_eng)
     record.form_path = str(form_path)
     registry = bodies.load_registry(mind_path)
     registry.bodies.append(record)

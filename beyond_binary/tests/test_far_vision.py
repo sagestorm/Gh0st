@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from beyond_binary.center import LivingCenter
-from beyond_binary.engine import Engine, RuleError
+from beyond_binary.engine import Engine, RuleError, normalize
 from beyond_binary.model import Hemisphere, Node
 from beyond_binary.seed import seed_domain, seed_minimal_hot_cold
 from beyond_binary import bodies, store
@@ -440,7 +440,8 @@ class SynonymCascadeTests(unittest.TestCase):
 
 
 class OpenMindScaffoldTests(unittest.TestCase):
-    def test_primitive_invent_outside_closed_alphabet(self):
+    def test_concept_formation_beyond_suffix_primitives(self):
+        from beyond_binary import concepts as concepts_mod
         from beyond_binary import invent as invent_mod
         from beyond_binary import mind as mind_mod
 
@@ -448,51 +449,69 @@ class OpenMindScaffoldTests(unittest.TestCase):
             mind_path = Path(tmp) / "mind.json"
             eng = Engine(seed_minimal_hot_cold())
             store.save(eng.torus, mind_path)
-            activity = [
-                {
-                    "cycle": 1,
-                    "nodes_before": 2,
-                    "nodes_after": 2,
-                    "acts": [
-                        {
-                            "act": "challenge",
-                            "detail": {
-                                "one_sided": True,
-                                "flags": [
-                                    {"node": "hot", "flag": "asymmetric_link"}
-                                ],
-                            },
-                        }
-                    ],
-                }
-            ]
+            center = LivingCenter(eng, history=[])
+            center.mind_store = mind_path
+            center.max_nodes_soft_cap = 40
+            center.think(8)
             alphabet = invent_mod.closed_invent_alphabet(eng, [])
-            result = mind_mod.invent_domain(
-                eng, mind_path, cycle=1, activity=activity
-            )
+            result = mind_mod.invent_domain(eng, mind_path, cycle=1)
             self.assertTrue(result.get("invented"))
             inv = result["invention"]
-            self.assertEqual(inv["source"], "primitive")
-            self.assertTrue(inv.get("why"))
-            self.assertNotIn(inv["cause"].lower(), alphabet)
-            self.assertNotIn(inv["effect"].lower(), alphabet)
+            self.assertEqual(inv["source"], "concept")
+            self.assertTrue(str(inv.get("why", "")).startswith("concept:"))
+            self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["cause"]))
+            self.assertFalse(concepts_mod.is_suffix_primitive_label(inv["effect"]))
+            self.assertNotIn(normalize(inv["cause"]), alphabet)
 
-    def test_policy_differential_same_counters_different_weights(self):
+    def test_policy_revises_rules_not_only_weights(self):
         from beyond_binary import policy as policy_mod
+        from beyond_binary.journal import JournalEntry
 
-        grow_pol = policy_mod.MetaPolicy(
-            grow_weight=2.0, prune_weight=0.1, updates=1
-        )
-        prune_pol = policy_mod.MetaPolicy(
-            grow_weight=0.1, prune_weight=2.0, updates=1
-        )
-        g = policy_mod.strategy_from_policy(grow_pol)
-        p = policy_mod.strategy_from_policy(prune_pol)
-        self.assertNotEqual(g["reason"], p["reason"])
-        self.assertTrue(g["from_policy"] and p["from_policy"])
-        self.assertGreater(g["grow_budget"], 0)
-        self.assertEqual(p["grow_budget"], 0)
-        self.assertTrue(p["prefer_prune"])
+        pol = policy_mod.MetaPolicy()
+        before = pol.rule_revisions
+        entries = [
+            JournalEntry(
+                cycle=i,
+                reflection="growth_fruitful",
+                signals={"grow_count": 1, "node_delta": 2, "flags": 0},
+                strategy_hint="grow",
+            )
+            for i in range(1, 4)
+        ]
+        pol = policy_mod.update_policy_from_journal(pol, entries)
+        self.assertGreater(pol.rule_revisions, before)
+        self.assertTrue(any(r.origin == "learned" for r in pol.rules))
+
+        # Same weights, different rule sets → different strategies.
+        a = policy_mod.MetaPolicy(updates=1, grow_weight=1.0, prune_weight=1.0)
+        b = policy_mod.MetaPolicy(updates=1, grow_weight=1.0, prune_weight=1.0)
+        b.rules = [
+            policy_mod.MetaRule(
+                "r-b", "structure_hungry", "prefer_prune", 3.0, "learned"
+            )
+        ]
+        sa = policy_mod.strategy_from_policy(a)
+        sb = policy_mod.strategy_from_policy(b)
+        self.assertNotEqual(sa["reason"], sb["reason"])
+        self.assertTrue(sb["prefer_prune"])
+
+    def test_form_specialty_capability_not_just_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            record = bodies.embody(
+                eng, name="optic-form", domain="optical", mind_store=mind_path
+            )
+            self.assertTrue(record.specialty)
+            mod, fn = bodies.load_form_specialty(record)
+            caps = list(mod.CAPABILITIES)
+            self.assertEqual(caps[0], record.specialty)
+            self.assertNotIn(caps[0], {"think", "answer", "load_engine"})
+            out = fn()
+            self.assertEqual(out["capability"], caps[0])
+            self.assertTrue(out["cause_pole"])
+            self.assertTrue(out["effect_pole"])
 
     def test_self_directed_live_without_every_flags(self):
         from beyond_binary.seed import seed_same_center
@@ -502,15 +521,23 @@ class OpenMindScaffoldTests(unittest.TestCase):
             mind_path = Path(tmp) / "mind.json"
             eng = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
             store.save(eng.torus, mind_path)
-            policy_mod.save_policy(
-                policy_mod.MetaPolicy(
-                    invent_weight=2.0,
-                    nurture_weight=2.0,
-                    grow_weight=0.5,
-                    updates=1,
-                ),
-                mind_path,
+            pol = policy_mod.MetaPolicy(
+                invent_weight=2.0,
+                nurture_weight=2.0,
+                grow_weight=0.5,
+                updates=1,
             )
+            pol.rules.append(
+                policy_mod.MetaRule(
+                    "r-t-inv", "structure_hungry", "prefer_invent", 2.5, "learned"
+                )
+            )
+            pol.rules.append(
+                policy_mod.MetaRule(
+                    "r-t-nur", "structure_hungry", "prefer_nurture", 2.5, "learned"
+                )
+            )
+            policy_mod.save_policy(pol, mind_path)
             bodies.embody(
                 eng, name="kid", domain="optical", mind_store=mind_path
             )
@@ -544,6 +571,7 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertTrue(by_id["I5"]["ok"])
         self.assertTrue(by_id["C4e"]["ok"])
         self.assertTrue(by_id["C3p"]["ok"])
+        self.assertTrue(by_id["C4f"]["ok"])
         self.assertTrue(by_id["C6s"]["ok"])
         self.assertTrue(report["engineering_gates_ok"])
 

@@ -191,10 +191,17 @@ class LivingCenter:
                     self.mind_store
                 ).exists():
                     policy_mod.save_policy(pol, self.mind_store)
-            if pol.updates > 0:
+            if pol.updates > 0 or pol.rule_revisions > 0 or any(
+                r.origin == "learned" for r in pol.rules
+            ):
+                # Persist freshly created default policy once so artifacts exist.
+                if not policy_mod.policy_path(self.mind_store).exists():
+                    policy_mod.save_policy(pol, self.mind_store)
                 self.strategy = Strategy.from_dict(
                     policy_mod.strategy_from_policy(
-                        pol, max_new_pairs=self.max_new_pairs_per_cycle
+                        pol,
+                        max_new_pairs=self.max_new_pairs_per_cycle,
+                        journal_entries=journal_rows,
                     )
                 )
                 return self.strategy

@@ -333,53 +333,37 @@ def run_verification() -> dict[str, Any]:
             f"sources={sorted(set(s for s in syn_sources if s))} synonym_nodes={syn_nodes[:8]}",
         )
 
-        # Open invention (bar §1 scaffolding): primitive pole outside closed alphabet
+        # Open invention (bar §1): structural concept formation beyond suffix primitives
+        from . import concepts as concepts_mod
         from . import invent as invent_mod
 
-        prim_path = root / "primitive.json"
+        prim_path = root / "concept.json"
         peng = Engine(seed_minimal_hot_cold())
         store.save(peng.torus, prim_path)
-        pressure_activity = [
-            {
-                "cycle": 1,
-                "nodes_before": 2,
-                "nodes_after": 2,
-                "acts": [
-                    {
-                        "act": "challenge",
-                        "detail": {
-                            "one_sided": True,
-                            "flags": [{"node": "hot", "flag": "asymmetric_link"}],
-                        },
-                    },
-                    {
-                        "act": "synthesize_check",
-                        "detail": {"refused": ["latent-topic"], "ok": 0, "checked": 1},
-                    },
-                ],
-            }
-        ]
-        store.append_activity(pressure_activity, prim_path)
+        pcenter = LivingCenter(peng, history=[])
+        pcenter.mind_store = prim_path
+        pcenter.max_nodes_soft_cap = 40
+        pcenter.think(8)
         alphabet_before = invent_mod.closed_invent_alphabet(peng, [])
-        prim = mind.invent_domain(
-            peng, prim_path, cycle=1, activity=pressure_activity
-        )
-        inv_p = prim.get("invention") or {}
-        prim_ok = (
-            bool(prim.get("invented"))
-            and inv_p.get("source") == "primitive"
+        concept_inv = mind.invent_domain(peng, prim_path, cycle=pcenter._cycle_index)
+        inv_p = concept_inv.get("invention") or {}
+        concept_ok = (
+            bool(concept_inv.get("invented"))
+            and inv_p.get("source") == "concept"
             and normalize_absent(inv_p.get("cause"), alphabet_before)
             and normalize_absent(inv_p.get("effect"), alphabet_before)
-            and bool(inv_p.get("why"))
+            and str(inv_p.get("why", "")).startswith("concept:")
+            and not concepts_mod.is_suffix_primitive_label(str(inv_p.get("cause", "")))
+            and not concepts_mod.is_suffix_primitive_label(str(inv_p.get("effect", "")))
         )
         gate(
             "C4e",
-            "Open-ish invention: primitive poles outside closed alphabet",
-            prim_ok,
-            str(inv_p or prim.get("reason")),
+            "Concept formation beyond pressure-suffix primitives",
+            concept_ok,
+            str(inv_p or concept_inv.get("reason")),
         )
 
-        # Open reflection (bar §2 scaffolding): mutable policy updates + cited id
+        # Open reflection (bar §2): policy revises its own rules (not only weights)
         from . import policy as policy_mod
 
         pol_path = root / "policy-mind.json"
@@ -387,26 +371,32 @@ def run_verification() -> dict[str, Any]:
         store.save(pol_eng.torus, pol_path)
         pc = LivingCenter(pol_eng, history=[])
         pc.mind_store = pol_path
-        pc.think(6)
+        pc.think(8)
         pol = policy_mod.load_policy(pol_path)
+        learned_rules = [r for r in pol.rules if r.origin == "learned" and r.enabled]
         pol_ok = (
             policy_mod.policy_path(pol_path).exists()
             and pol.updates >= 1
+            and pol.rule_revisions >= 1
+            and len(learned_rules) >= 1
             and pc.strategy.from_policy
-            and str(pc.strategy.reason).startswith("policy:")
+            and ":rules:" in str(pc.strategy.reason)
         )
         gate(
             "C3p",
-            "Open-ish reflection: learned policy updates and steers strategy",
+            "Metacognition revises its own rules from experience",
             pol_ok,
-            f"updates={pol.updates} reason={pc.strategy.reason} id={pol.policy_id}",
+            (
+                f"updates={pol.updates} revisions={pol.rule_revisions} "
+                f"learned={len(learned_rules)} reason={pc.strategy.reason}"
+            ),
         )
 
         # Self-directed goals (bar §3 scaffolding): invent+nurture with every=0
         self_path = root / "selfdir.json"
         seng2 = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
         store.save(seng2.torus, self_path)
-        # Seed a policy that wants invent + nurture without human intervals.
+        # Seed a policy with rules that prefer invent+nurture without human intervals.
         seed_pol = policy_mod.MetaPolicy(
             grow_weight=0.5,
             prune_weight=0.2,
@@ -414,6 +404,16 @@ def run_verification() -> dict[str, Any]:
             invent_weight=1.5,
             nurture_weight=1.4,
             updates=1,
+        )
+        seed_pol.rules.append(
+            policy_mod.MetaRule(
+                "r-self-inv", "structure_hungry", "prefer_invent", 2.5, "learned"
+            )
+        )
+        seed_pol.rules.append(
+            policy_mod.MetaRule(
+                "r-self-nur", "structure_hungry", "prefer_nurture", 2.5, "learned"
+            )
         )
         policy_mod.save_policy(seed_pol, self_path)
         # Need a body present for nurture to matter.
@@ -447,6 +447,41 @@ def run_verification() -> dict[str, Any]:
             ),
         )
 
+        # Form that matters (bar §4 scaffolding): body-specific specialty capability
+        form_path = root / "form-mind.json"
+        feng = Engine(seed_minimal_hot_cold())
+        store.save(feng.torus, form_path)
+        frec = bodies.embody(
+            feng, name="specialty-body", domain="optical", mind_store=form_path
+        )
+        form_ok = False
+        form_ev = ""
+        try:
+            mod, specialty_fn = bodies.load_form_specialty(frec)
+            caps = list(getattr(mod, "CAPABILITIES", []) or [])
+            result = specialty_fn()
+            form_ok = (
+                bool(caps)
+                and caps[0] not in {"think", "answer", "load_engine"}
+                and callable(specialty_fn)
+                and result.get("capability") == caps[0]
+                and result.get("cause_pole")
+                and result.get("effect_pole")
+                and frec.specialty == caps[0]
+            )
+            form_ev = (
+                f"specialty={caps[0]} cause={result.get('cause_pole')} "
+                f"effect={result.get('effect_pole')} gradient={result.get('gradient')}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            form_ev = str(exc)
+        gate(
+            "C4f",
+            "Forms expose non-prespecified specialty capability",
+            form_ok,
+            form_ev,
+        )
+
     required = [
         "C1",
         "C2",
@@ -458,6 +493,7 @@ def run_verification() -> dict[str, Any]:
         "C4c",
         "C4d",
         "C4e",
+        "C4f",
         "C6",
         "C6s",
         "I1",
@@ -467,17 +503,18 @@ def run_verification() -> dict[str, Any]:
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
-    # Sentience bar — scaffolding gates (C4e/C3p/C6s) ≠ full open mind.
+    # Sentience bar — stronger scaffolds still ≠ vision-level open mind.
     # See docs/sentience-evidence-bar.md §§1–6.
     sentience = {
         "id": "SENTIENCE",
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Open-invention/reflection/self-direction scaffolds exist but remain "
-            "rule/pressure/template-bounded. Missing: truly open concept formation, "
-            "metacognition that revises its own rules beyond weight updates, "
-            "forms with non-prespecified behavior (sentience-evidence-bar.md)."
+            "Concept/role invent, rule-revising policy, and specialty forms are "
+            "stronger scaffolds — still bounded vocabularies/templates. Missing: "
+            "unconstrained concept formation, metacognition that invents new "
+            "condition/action kinds, forms whose behavior is not generated from "
+            "pole-templates (sentience-evidence-bar.md)."
         ),
     }
     gates.append(sentience)
