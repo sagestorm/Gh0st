@@ -43,7 +43,8 @@ def run_verification() -> dict[str, Any]:
         center = LivingCenter(eng, history=[])
         center.mind_store = thermal
         center.max_nodes_soft_cap = 40
-        reports = center.think(10)
+        # Grow/generative evidence only — leave invent pool for C4b (post-#14 drain).
+        reports = center.think(10, allow_primary_invent=False)
         sources = [
             a.detail.get("source")
             for r in reports
@@ -404,14 +405,14 @@ def run_verification() -> dict[str, Any]:
             f"no_orphans={i3_no_orphans}",
         )
 
-        # I4 — equal-in/out elegance: think does not explode duplicates past soft cap
+        # I4 — equal-in/out elegance: cycle soft-cap prune, not invent drain (#14).
         eleg_path = root / "elegance.json"
         eeng = Engine(seed_minimal_hot_cold())
         store.save(eeng.torus, eleg_path)
         ec = LivingCenter(eeng, history=[])
         ec.mind_store = eleg_path
         ec.max_nodes_soft_cap = 12
-        ec.think(20)
+        ec.think(20, allow_primary_invent=False)
         names = [n.name for n in eeng.torus.nodes.values()]
         dupes = len(names) - len({normalize(x) for x in names})
         try:
@@ -479,7 +480,8 @@ def run_verification() -> dict[str, Any]:
         tcenter = LivingCenter(teng, history=[])
         tcenter.mind_store = topo_path
         tcenter.max_nodes_soft_cap = 60
-        tcenter.think(6)
+        # Grow first; open invent must remain available for C4e after #14 drain.
+        tcenter.think(6, allow_primary_invent=False)
         nodes_before = set(teng.torus.nodes)
         alphabet_before = invent_mod.closed_invent_alphabet(teng, [])
         topo_inv = mind.invent_domain(teng, topo_path, cycle=tcenter._cycle_index)
