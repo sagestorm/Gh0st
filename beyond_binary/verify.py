@@ -578,11 +578,25 @@ def run_verification() -> dict[str, Any]:
             syn_macros = [
                 k for k in prog.macros if str(k).startswith("syn_")
             ]
-            syn_ops = [
+            proposed_prims = [
+                k
+                for k in prog.primitives
+                if str(k).startswith("prim_")
+                and k not in capability_mod.seed_primitives()
+            ]
+            prim_ops = [
                 o.get("op")
                 for o in prog.ops
-                if str(o.get("op", "")).startswith("syn_")
+                if str(o.get("op", "")).startswith("prim_")
             ]
+            # Specs are declarative queries — not syn_* macro step lists.
+            prim_specs_ok = all(
+                isinstance(prog.primitives.get(k), dict)
+                and prog.primitives[k].get("kind")
+                in {"reduce_path", "pair_metric", "branch_fanout"}
+                and "body" not in prog.primitives[k]  # not a macro
+                for k in proposed_prims
+            )
             form_ok = (
                 bool(caps)
                 and entry == "interpret_program"
@@ -599,21 +613,27 @@ def run_verification() -> dict[str, Any]:
                 and Path(frec.capability_path).exists()
                 and len(prog.ops) >= 2
                 and prog.program_id != prog2.program_id
-                and len(syn_macros) >= 1
-                and len(syn_ops) >= 1
+                and len(proposed_prims) >= 1
+                and len(prim_ops) >= 1
+                and prog.primitive_revisions >= 1
+                and prim_specs_ok
+                and set(proposed_prims).issubset(set(result.get("primitives") or []))
                 and not template_like
             )
             form_ev = (
                 f"entry={caps[0]} program={prog.program_id} "
-                f"ops={result.get('ops')} macros={sorted(prog.macros)} "
-                f"revisions={prog.revisions} other_program={prog2.program_id} "
+                f"ops={result.get('ops')} "
+                f"primitives={sorted(prog.primitives)} "
+                f"prim_revisions={prog.primitive_revisions} "
+                f"macros={sorted(prog.macros)} "
+                f"other_program={prog2.program_id} "
                 f"result_keys={sorted((result.get('result') or {}).keys())}"
             )
         except Exception as exc:  # noqa: BLE001
             form_ev = str(exc)
         gate(
             "C4f",
-            "Forms synthesize CapProgram opcodes as macros from experience",
+            "Forms propose CapProgram primitives validated against dual invariants",
             form_ok,
             form_ev,
         )
@@ -646,13 +666,13 @@ def run_verification() -> dict[str, Any]:
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
         "ok": False,
         "evidence": (
-            "Topology invent, meta microprograms, and invent-target abandon are "
-            "stronger scaffolds — still bound by domain-pair bridge/reparent search, "
-            "a fixed meta-ISA (load/mul/add/cmp), and abandon heuristics over a "
-            "closed invent-source menu. Missing vs sentience-evidence-bar.md: "
-            "open topology search beyond dual-domain anchors, meta programs that "
-            "extend their own ISA, goal formation beyond invent-source "
-            "abandon/reprioritize; CapProgram primitive ISA still closed."
+            "Topology invent, meta microprograms, invent-target abandon, and "
+            "body-proposed CapProgram primitives are stronger scaffolds — still "
+            "bound by a finite primitive-spec compiler (reduce_path/pair_metric/"
+            "branch_fanout), fixed meta-ISA, and invent-source abandon menu. "
+            "Missing vs sentience-evidence-bar.md: primitives outside the query-"
+            "spec compiler, meta-ISA self-extension, open goal formation beyond "
+            "invent-source abandon/reprioritize."
         ),
     }
     gates.append(sentience)

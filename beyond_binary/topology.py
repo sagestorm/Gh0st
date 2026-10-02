@@ -174,12 +174,22 @@ def search_topology_edits(
             continue
         cause_nodes.append((node.name, eng.torus.nodes[node.opposite].name, dom))
 
-    # Domain roots as attachment anchors.
-    anchors: dict[str, tuple[str, str]] = {}
+    # Anchors: domain roots PLUS non-root dual pairs (open beyond pole-only search).
+    anchors: dict[str, list[tuple[str, str]]] = {}
     for domain in domains:
         a, b = lexicon.DOMAIN_POLES[domain]
         if eng.exists(a) and eng.exists(b):
-            anchors[domain] = (a, b)
+            anchors.setdefault(domain, []).append((a, b))
+    for name, opp, dom in cause_nodes:
+        if dom not in domains:
+            continue
+        node = eng.get(name)
+        if node.parent is None:
+            continue  # roots already covered
+        pair = (name, opp)
+        bucket = anchors.setdefault(dom, [])
+        if pair not in bucket:
+            bucket.append(pair)
 
     if len(anchors) < 2:
         return []
@@ -187,81 +197,80 @@ def search_topology_edits(
     out: list[TopologyEdit] = []
     domain_list = sorted(anchors.keys())
 
-    # --- Bridge search: new dual pair under parents from different domains ---
+    # --- Bridge search: new dual under parents from a *different* domain ---
     for i, d_from in enumerate(domain_list):
         for d_to in domain_list[i + 1 :]:
-            # Attach under d_to roots, naming from structural digest of both domains.
-            cp, ep = anchors[d_to]
-            label_parts = [
-                "bridge",
-                d_from,
-                d_to,
-                normalize(cp),
-                normalize(ep),
-                str(len(eng.torus.nodes)),
-            ]
-            # Include a sample node from d_from so digest tracks live structure.
-            sample = next((n for n, _, d in cause_nodes if d == d_from), None)
-            if sample:
-                label_parts.append(normalize(sample))
-            cause = _digest_label("tb", label_parts + ["c"])
-            effect = _digest_label("te", label_parts + ["e"])
-            if normalize(cause) in alphabet or normalize(effect) in alphabet:
-                continue
-            instance = f"{normalize(cause)}-{normalize(effect)}"
-            if normalize(instance) in used_instances:
-                continue
-            why = (
-                f"topology:bridge:from={d_from},to={d_to},"
-                f"under={normalize(cp)}/{normalize(ep)}"
-            )
-            edit = TopologyEdit(
-                kind="bridge",
-                cause=cause,
-                effect=effect,
-                cause_parent=cp,
-                effect_parent=ep,
-                domain_from=d_from,
-                domain_to=d_to,
-                why=why,
-            )
-            trial = _clone_engine(eng)
-            if _apply_bridge(trial, edit):
-                out.append(edit)
-            if len(out) >= limit:
-                return out
+            for cp, ep in anchors[d_to][:3]:  # try several anchors, not only poles
+                label_parts = [
+                    "bridge",
+                    d_from,
+                    d_to,
+                    normalize(cp),
+                    normalize(ep),
+                    str(len(eng.torus.nodes)),
+                ]
+                sample = next((n for n, _, d in cause_nodes if d == d_from), None)
+                if sample:
+                    label_parts.append(normalize(sample))
+                cause = _digest_label("tb", label_parts + ["c"])
+                effect = _digest_label("te", label_parts + ["e"])
+                if normalize(cause) in alphabet or normalize(effect) in alphabet:
+                    continue
+                instance = f"{normalize(cause)}-{normalize(effect)}"
+                if normalize(instance) in used_instances:
+                    continue
+                why = (
+                    f"topology:bridge:from={d_from},to={d_to},"
+                    f"under={normalize(cp)}/{normalize(ep)}"
+                )
+                edit = TopologyEdit(
+                    kind="bridge",
+                    cause=cause,
+                    effect=effect,
+                    cause_parent=cp,
+                    effect_parent=ep,
+                    domain_from=d_from,
+                    domain_to=d_to,
+                    why=why,
+                )
+                trial = _clone_engine(eng)
+                if _apply_bridge(trial, edit):
+                    out.append(edit)
+                if len(out) >= limit:
+                    return out
 
-    # --- Re-parent search: move a non-root dual under another domain's root ---
+    # --- Re-parent: move a non-root dual under another domain's anchor ---
     for name, opp, d_from in cause_nodes:
         node = eng.get(name)
         if node.parent is None:
-            continue  # don't re-parent domain poles themselves
-        for d_to, (cp, ep) in anchors.items():
+            continue
+        for d_to, pairs in anchors.items():
             if d_to == d_from:
                 continue
-            if normalize(node.parent or "") == normalize(cp):
-                continue
-            why = (
-                f"topology:reparent:node={normalize(name)},"
-                f"from={d_from},to={d_to},under={normalize(cp)}"
-            )
-            edit = TopologyEdit(
-                kind="reparent",
-                cause=name,
-                effect=opp,
-                cause_parent=cp,
-                effect_parent=ep,
-                domain_from=d_from,
-                domain_to=d_to,
-                why=why,
-            )
-            trial = _clone_engine(eng)
-            if _apply_reparent(trial, edit):
-                # Instance key for invent registry — topology edit id.
-                # Use digest so reparent has a stable invent identity.
-                out.append(edit)
-            if len(out) >= limit:
-                return out
+            for cp, ep in pairs[:3]:
+                if normalize(node.parent or "") == normalize(cp):
+                    continue
+                if normalize(name) == normalize(cp):
+                    continue
+                why = (
+                    f"topology:reparent:node={normalize(name)},"
+                    f"from={d_from},to={d_to},under={normalize(cp)}"
+                )
+                edit = TopologyEdit(
+                    kind="reparent",
+                    cause=name,
+                    effect=opp,
+                    cause_parent=cp,
+                    effect_parent=ep,
+                    domain_from=d_from,
+                    domain_to=d_to,
+                    why=why,
+                )
+                trial = _clone_engine(eng)
+                if _apply_reparent(trial, edit):
+                    out.append(edit)
+                if len(out) >= limit:
+                    return out
 
     return out
 

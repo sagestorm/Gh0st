@@ -538,11 +538,22 @@ class OpenMindScaffoldTests(unittest.TestCase):
             self.assertGreaterEqual(len(out["ops"]), 2)
             prog = capability_mod.load_program(record.store_path)
             self.assertEqual(out["program_id"], prog.program_id)
-            self.assertTrue(prog.macros)
-            self.assertTrue(any(str(k).startswith("syn_") for k in prog.macros))
+            self.assertTrue(prog.primitives)
             self.assertTrue(
-                any(str(o.get("op", "")).startswith("syn_") for o in prog.ops)
+                any(str(k).startswith("prim_") for k in prog.primitives)
             )
+            self.assertGreaterEqual(prog.primitive_revisions, 1)
+            self.assertTrue(
+                any(str(o.get("op", "")).startswith("prim_") for o in prog.ops)
+            )
+            for name, spec in prog.primitives.items():
+                self.assertNotIn(name, capability_mod.seed_primitives())
+                self.assertIn(
+                    spec.get("kind"),
+                    {"reduce_path", "pair_metric", "branch_fanout"},
+                )
+                self.assertNotIn("body", spec)
+            self.assertTrue(out.get("primitives"))
 
     def test_self_directed_live_without_every_flags(self):
         from beyond_binary.seed import seed_same_center
