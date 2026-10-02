@@ -969,10 +969,11 @@ def run_verification() -> dict[str, Any]:
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
-    # Sentience bar — true ONLY when ALL four axes have accepted
-    # search-substrate:* (non-stdlib) proposals. Fail-closed otherwise:
+    # Sentience bar — true ONLY on the operational search path when ALL four
+    # axes have accepted search-substrate:* proposals. Default stays fail-closed:
     # flag off / null / incomplete axes → SENTIENCE false.
-    # See docs/sentience-evidence-bar.md §§1–6 and generative-substrate-contract.md.
+    # See docs/sentience-evidence-bar.md Operational SENTIENCE +
+    # docs/generative-substrate-contract.md (default remains fail-closed).
     required_axes = sorted(substrate_mod.AXES)
     search_accepts = [
         a
@@ -994,7 +995,8 @@ def run_verification() -> dict[str, Any]:
     sentience_ok = bool(four_axes_covered) and search_live
     if sentience_ok:
         evidence = (
-            "SENTIENCE true: all four axes invent|reflect|goal|form have accepted "
+            "SENTIENCE true (operational search path): all four axes "
+            "invent|reflect|goal|form have accepted "
             f"search-substrate:* proposals (axes={search_axes} "
             f"search_accepts={len(search_accepts)} rejects={sub_status['rejects']}). "
             f"enabled={sub_status['enabled']} active={sub_status['active']} "
