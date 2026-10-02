@@ -79,6 +79,24 @@ class StructuralScore:
         return self.node_count < other.node_count
 
 
+@dataclass
+class Strategy:
+    """Metacognitive bias derived from center activity history."""
+
+    grow_budget: int = MAX_NEW_PAIRS_PER_CYCLE
+    prefer_prune: bool = False
+    prefer_migrate: bool = False
+    reason: str = "default"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "grow_budget": self.grow_budget,
+            "prefer_prune": self.prefer_prune,
+            "prefer_migrate": self.prefer_migrate,
+            "reason": self.reason,
+        }
+
+
 class LivingCenter:
     """The hole in the torus: decide grow/repair/dedupe/prune from the median."""
 
@@ -88,12 +106,93 @@ class LivingCenter:
         *,
         max_new_pairs_per_cycle: int = MAX_NEW_PAIRS_PER_CYCLE,
         max_nodes_soft_cap: int = MAX_NODES_SOFT_CAP,
+        history: list[dict[str, Any]] | None = None,
     ):
         self.engine = engine
         self.max_new_pairs_per_cycle = max_new_pairs_per_cycle
         self.max_nodes_soft_cap = max_nodes_soft_cap
         self._cycle_index = 0
         self.activity: list[dict[str, Any]] = []
+        self.strategy = Strategy(grow_budget=max_new_pairs_per_cycle)
+        if history:
+            self.sync_cycle_index(history)
+            self.strategy = self.metacognize(history)
+
+    def sync_cycle_index(self, history: list[dict[str, Any]] | None) -> None:
+        """Continue numbering from persisted activity (Sourcery fix)."""
+        if not history:
+            # Also honor in-torus center_log length as a weak hint.
+            self._cycle_index = len(self.engine.torus.center_log)
+            return
+        max_cycle = 0
+        for row in history:
+            try:
+                max_cycle = max(max_cycle, int(row.get("cycle", 0)))
+            except (TypeError, ValueError):
+                continue
+        self._cycle_index = max_cycle
+
+    def metacognize(self, history: list[dict[str, Any]] | None = None) -> Strategy:
+        """Read center log and change grow/prune/migrate bias (Phase 4)."""
+        rows = history if history is not None else self.activity
+        if not rows:
+            self.strategy = Strategy(
+                grow_budget=self.max_new_pairs_per_cycle,
+                reason="no_history",
+            )
+            return self.strategy
+
+        grow_total = 0
+        prune_total = 0
+        flag_total = 0
+        node_deltas: list[int] = []
+        for row in rows[-12:]:
+            before = int(row.get("nodes_before", 0) or 0)
+            after = int(row.get("nodes_after", 0) or 0)
+            node_deltas.append(after - before)
+            for act in row.get("acts", []):
+                name = act.get("act") if isinstance(act, dict) else None
+                detail = act.get("detail", {}) if isinstance(act, dict) else {}
+                if name == "grow":
+                    grow_total += int(detail.get("count", 0) or 0)
+                elif name == "prune":
+                    prune_total += int(detail.get("count", 0) or 0)
+                elif name == "challenge" and detail.get("one_sided"):
+                    flag_total += 1
+
+        # If growth stalled and challenges are clear → keep growing.
+        # If many flags or node churn with little grow payoff → prefer prune.
+        # If grow kept adding but scores flat in last rows → prefer migrate.
+        recent_growth = sum(1 for d in node_deltas[-5:] if d > 0)
+        if flag_total >= 2 or (prune_total == 0 and len(self.engine.torus.nodes) > self.max_nodes_soft_cap):
+            self.strategy = Strategy(
+                grow_budget=0,
+                prefer_prune=True,
+                prefer_migrate=False,
+                reason="challenge_or_over_cap",
+            )
+        elif grow_total >= 3 and recent_growth == 0:
+            self.strategy = Strategy(
+                grow_budget=0,
+                prefer_prune=False,
+                prefer_migrate=True,
+                reason="stalled_after_growth",
+            )
+        elif grow_total == 0 and flag_total == 0:
+            self.strategy = Strategy(
+                grow_budget=max(1, self.max_new_pairs_per_cycle),
+                prefer_prune=False,
+                prefer_migrate=False,
+                reason="hungry_for_structure",
+            )
+        else:
+            self.strategy = Strategy(
+                grow_budget=self.max_new_pairs_per_cycle,
+                prefer_prune=False,
+                prefer_migrate=recent_growth > 2,
+                reason="balanced",
+            )
+        return self.strategy
 
     # --- scoring ---------------------------------------------------------
 
@@ -132,6 +231,8 @@ class LivingCenter:
     # --- cycle -----------------------------------------------------------
 
     def cycle(self) -> CycleReport:
+        # Refresh strategy from accumulated activity each cycle (metacognition).
+        self.metacognize(self.activity)
         self._cycle_index += 1
         report = CycleReport(
             cycle=self._cycle_index,
@@ -139,6 +240,9 @@ class LivingCenter:
             score_before=self.score().to_dict(),
         )
 
+        report.acts.append(
+            ActRecord("metacognize", {"strategy": self.strategy.to_dict()})
+        )
         report.acts.append(self._act_review())
         report.acts.append(self._act_repair_orphans())
         report.acts.append(self._act_grow())
@@ -158,6 +262,36 @@ class LivingCenter:
         if steps < 1:
             raise RuleError("think steps must be >= 1")
         return [self.cycle() for _ in range(steps)]
+
+    def autonomy(
+        self,
+        cycles: int,
+        *,
+        embody_every: int = 0,
+        embody_domain: str = "ontology",
+        mind_store: Any = None,
+    ) -> dict[str, Any]:
+        """Persistent loop: metacognize → think cycles → optional embody (C6)."""
+        from . import bodies
+
+        reports = self.think(cycles)
+        embodied = None
+        if embody_every and cycles >= embody_every:
+            try:
+                embodied = bodies.embody(
+                    self.engine,
+                    name=f"auto-{self._cycle_index}",
+                    domain=embody_domain,
+                    mind_store=mind_store,
+                    cycle=self._cycle_index,
+                ).to_dict()
+            except Exception as exc:  # noqa: BLE001 — record, don't abort autonomy
+                embodied = {"error": str(exc)}
+        return {
+            "cycles": [r.to_dict() for r in reports],
+            "strategy": self.strategy.to_dict(),
+            "embodied": embodied,
+        }
 
     # --- ordered acts ----------------------------------------------------
 
@@ -254,6 +388,9 @@ class LivingCenter:
 
     def _act_grow(self) -> ActRecord:
         added: list[dict[str, str]] = []
+        budget = self.strategy.grow_budget
+        if self.strategy.prefer_prune:
+            budget = 0
         if len(self.engine.torus.nodes) >= self.max_nodes_soft_cap:
             return ActRecord(
                 "grow",
@@ -261,13 +398,22 @@ class LivingCenter:
                     "added": [],
                     "skipped": "soft_cap",
                     "cap": self.max_nodes_soft_cap,
+                    "strategy": self.strategy.to_dict(),
+                },
+            )
+        if budget <= 0:
+            return ActRecord(
+                "grow",
+                {
+                    "added": [],
+                    "skipped": "strategy_budget_zero",
+                    "strategy": self.strategy.to_dict(),
                 },
             )
 
         existing = set(self.engine.torus.nodes.keys())
         parents = set(self.engine.torus.nodes.keys())
         pending = lexicon.pending_expansions(existing, parent_names=parents)
-        budget = self.max_new_pairs_per_cycle
         for entry in pending:
             if budget <= 0:
                 break
@@ -289,7 +435,6 @@ class LivingCenter:
                     }
                 )
                 continue
-            # Condensation sits under cold per outline (add_under already places it).
             added.append(
                 {
                     "cause": child.name,
@@ -302,7 +447,14 @@ class LivingCenter:
 
         topic = added[0]["cause"] if added else None
         self.engine.center(CenterAction.ADD, topic)
-        return ActRecord("grow", {"added": added, "count": len(added)})
+        return ActRecord(
+            "grow",
+            {
+                "added": added,
+                "count": len(added),
+                "strategy": self.strategy.to_dict(),
+            },
+        )
 
     def _act_dedupe(self) -> ActRecord:
         merged: list[dict[str, str]] = []
@@ -395,8 +547,22 @@ class LivingCenter:
                 flags.append({"node": node.name, "flag": "same_hemisphere_opposite"})
             elif opp.opposite != normalize(node.name):
                 flags.append({"node": node.name, "flag": "asymmetric_link"})
-        topic = flags[0]["node"] if flags else None
-        self.engine.center(CenterAction.CHALLENGE, topic)
+
+        # Sourcery fix: never pass dangling topics into engine.center/answer.
+        safe_topic = None
+        for flag in flags:
+            if flag["flag"] == "dangling_opposite":
+                continue
+            if self.engine.exists(flag["node"]):
+                node = self.engine.get(flag["node"])
+                if node.opposite and self.engine.torus.nodes.get(node.opposite):
+                    safe_topic = flag["node"]
+                    break
+        try:
+            self.engine.center(CenterAction.CHALLENGE, safe_topic)
+        except RuleError:
+            self.engine.center(CenterAction.CHALLENGE, None)
+
         return ActRecord(
             "challenge",
             {
@@ -409,7 +575,7 @@ class LivingCenter:
     def _act_experiment_migrate(self) -> ActRecord:
         """Try lexicon-aligned parent placement; keep only if structural score improves."""
         experiments: list[dict[str, Any]] = []
-        for entry in lexicon.THERMAL_CASCADE:
+        for entry in lexicon.all_cascades():
             if not self.engine.exists(entry.cause):
                 continue
             node = self.engine.get(entry.cause)
@@ -418,6 +584,8 @@ class LivingCenter:
                 continue
             if not self.engine.exists(entry.cause_parent):
                 continue
+            if not self.strategy.prefer_migrate and experiments:
+                break
             before = self.score()
             old_parent = node.parent
             try:
@@ -435,9 +603,7 @@ class LivingCenter:
                 continue
             after = self.score()
             kept = after.better_than(before) or after.dual_coverage >= before.dual_coverage
-            # Prefer lexicon home when coverage does not regress.
             if not kept:
-                # Revert
                 try:
                     self.engine.migrate_link(
                         entry.cause,
@@ -457,12 +623,11 @@ class LivingCenter:
                     "provisional": True,
                 }
             )
-            # One experiment per cycle keeps mutation elegant.
             break
 
         # Also align effect-side parents when cause was skipped.
         if not experiments:
-            for entry in lexicon.THERMAL_CASCADE:
+            for entry in lexicon.all_cascades():
                 if not self.engine.exists(entry.effect):
                     continue
                 node = self.engine.get(entry.effect)

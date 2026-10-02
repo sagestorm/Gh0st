@@ -1,13 +1,13 @@
-"""Built-in thermal (hot/cold) lexicon + deterministic expansion rules.
+"""Multi-domain lexicons + deterministic expansion rules.
 
-Phase 2 stays on one instance. No external LLM — growth is lexicon-driven:
-  synonym-under-pole → opposite-state link → related branch.
+Domains: thermal (hot/cold), ontological (nothing/something), optical (light/dark).
+Same Living Center loop grows any active domain — no external LLM.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,6 @@ class LexEntry:
     effect_parent: str
 
 
-# Ordered cascade under hot/cold (outline: hot → boiling → water → condensation).
 THERMAL_CASCADE: tuple[LexEntry, ...] = (
     LexEntry("boiling", "freezing", "hot", "cold"),
     LexEntry("water", "condensation", "boiling", "cold"),
@@ -28,7 +27,25 @@ THERMAL_CASCADE: tuple[LexEntry, ...] = (
     LexEntry("warm", "cool", "hot", "cold"),
 )
 
-# Alias groups: first name is canonical; others merge into it when both exist.
+ONTOLOGY_CASCADE: tuple[LexEntry, ...] = (
+    LexEntry("absence", "presence", "nothing", "something"),
+    LexEntry("void", "form", "nothing", "something"),
+    LexEntry("empty", "filled", "nothing", "something"),
+)
+
+OPTICAL_CASCADE: tuple[LexEntry, ...] = (
+    LexEntry("bright", "dim", "light", "dark"),
+    LexEntry("day", "night", "light", "dark"),
+    LexEntry("glow", "shadow", "light", "dark"),
+)
+
+# Backward-compatible name used by older center code paths.
+DOMAIN_CASCADES: dict[str, tuple[LexEntry, ...]] = {
+    "thermal": THERMAL_CASCADE,
+    "ontology": ONTOLOGY_CASCADE,
+    "optical": OPTICAL_CASCADE,
+}
+
 THERMAL_ALIASES: tuple[tuple[str, ...], ...] = (
     ("boiling", "boil", "boiled", "scalding"),
     ("freezing", "freeze", "frozen", "chilling"),
@@ -40,16 +57,46 @@ THERMAL_ALIASES: tuple[tuple[str, ...], ...] = (
     ("frost", "icing"),
 )
 
-# Direct antonym hints for orphan repair (normalized lookup built at import).
+ONTOLOGY_ALIASES: tuple[tuple[str, ...], ...] = (
+    ("absence", "absent", "missing"),
+    ("presence", "present", "here"),
+    ("void", "vacuum", "nil"),
+    ("form", "shape", "structure"),
+    ("empty", "emptiness"),
+    ("filled", "full", "occupied"),
+)
+
+OPTICAL_ALIASES: tuple[tuple[str, ...], ...] = (
+    ("bright", "brighter", "luminous"),
+    ("dim", "dimmer", "faint"),
+    ("day", "daytime"),
+    ("night", "nighttime"),
+    ("glow", "gleam"),
+    ("shadow", "shade"),
+)
+
+ALL_ALIASES: tuple[tuple[str, ...], ...] = (
+    THERMAL_ALIASES + ONTOLOGY_ALIASES + OPTICAL_ALIASES
+)
+
 _ANTONYM_PAIRS: tuple[tuple[str, str], ...] = tuple(
-    (e.cause, e.effect) for e in THERMAL_CASCADE
+    (e.cause, e.effect)
+    for cascade in DOMAIN_CASCADES.values()
+    for e in cascade
 ) + (
     ("hot", "cold"),
+    ("nothing", "something"),
+    ("light", "dark"),
 )
+
+DOMAIN_POLES: dict[str, tuple[str, str]] = {
+    "thermal": ("hot", "cold"),
+    "ontology": ("nothing", "something"),
+    "optical": ("light", "dark"),
+}
 
 
 def antonym_for(name: str) -> Optional[str]:
-    """Return the lexicon antonym for a name, if known."""
     key = name.strip().lower()
     for a, b in _ANTONYM_PAIRS:
         if key == a.lower():
@@ -60,9 +107,8 @@ def antonym_for(name: str) -> Optional[str]:
 
 
 def canonical_name(name: str) -> str:
-    """Map an alias to its canonical lexicon name; otherwise return normalized input."""
     key = name.strip().lower()
-    for group in THERMAL_ALIASES:
+    for group in ALL_ALIASES:
         canon = group[0]
         if key in {g.lower() for g in group}:
             return canon
@@ -70,24 +116,47 @@ def canonical_name(name: str) -> str:
 
 
 def alias_groups() -> tuple[tuple[str, ...], ...]:
-    return THERMAL_ALIASES
+    return ALL_ALIASES
+
+
+def all_cascades() -> tuple[LexEntry, ...]:
+    out: list[LexEntry] = []
+    for cascade in DOMAIN_CASCADES.values():
+        out.extend(cascade)
+    return tuple(out)
+
+
+def detect_domains(existing_names: Iterable[str]) -> set[str]:
+    names = {n.lower() for n in existing_names}
+    found: set[str] = set()
+    for domain, (a, b) in DOMAIN_POLES.items():
+        if a in names or b in names:
+            found.add(domain)
+    return found
 
 
 def pending_expansions(
     existing_names: set[str],
     *,
     parent_names: set[str],
+    domains: set[str] | None = None,
 ) -> list[LexEntry]:
     """Lexicon entries whose parents exist and whose children are not yet present."""
     existing = {n.lower() for n in existing_names}
     parents = {n.lower() for n in parent_names}
+    active = domains if domains is not None else detect_domains(existing_names)
+    if not active:
+        active = set(DOMAIN_CASCADES.keys())
     out: list[LexEntry] = []
-    for entry in THERMAL_CASCADE:
-        if entry.cause_parent.lower() not in parents:
+    for domain in ("thermal", "ontology", "optical"):
+        if domain not in active:
             continue
-        if entry.effect_parent.lower() not in parents:
-            continue
-        if entry.cause.lower() in existing or entry.effect.lower() in existing:
-            continue
-        out.append(entry)
+        for entry in DOMAIN_CASCADES[domain]:
+            if entry.cause_parent.lower() not in parents:
+                continue
+            if entry.effect_parent.lower() not in parents:
+                continue
+            if entry.cause.lower() in existing or entry.effect.lower() in existing:
+                continue
+            out.append(entry)
     return out
