@@ -669,17 +669,46 @@ def refresh_invent_registry(
     # Optional generative substrate (default off → NullSubstrate / no-op).
     try:
         from . import substrate as substrate_mod
+        from . import search_substrate as search_mod
 
+        # Handle for SearchSubstrate.accept to append into this registry.
+        class _InventHandle:
+            pass
+
+        handle = _InventHandle()
+        handle.engine = eng
+        handle._search_invent_registry = registry  # noqa: SLF001
         substrate_mod.consult(
             "invent",
             {
+                "eng": eng,
                 "used_poles": sorted(used_poles),
                 "used_instances": sorted(used_instances),
                 "candidate_count": len(registry.candidates),
                 "journal_len": len(journal_rows or []),
             },
-            center=None,
+            center=handle,
         )
+        # Merge any pending invent payloads (accept without handle).
+        for row in search_mod.drain_pending_invent():
+            key = normalize(str(row.get("instance", "")))
+            if not key or key in existing_keys:
+                continue
+            registry.candidates.append(
+                InventCandidate(
+                    cause=str(row.get("cause", "")),
+                    effect=str(row.get("effect", "")),
+                    instance=str(row.get("instance", "")),
+                    source="search",
+                    why=str(row.get("why", "search-substrate")),
+                    edit={
+                        "kind": "edit_ast",
+                        "ast": list(row.get("ast") or []),
+                    },
+                    priority=2.5,
+                )
+            )
+            existing_keys.add(key)
     except Exception:  # noqa: BLE001
         pass
     save_invent_registry(registry, mind_store)
@@ -705,12 +734,13 @@ def next_invention(
 
     # Prefer high priority; topology > concept > … ; skip abandoned.
     source_order = {
-        "topology": 0,
-        "concept": 1,
-        "primitive": 2,
-        "compose": 3,
-        "promote": 4,
-        "seed": 5,
+        "search": 0,
+        "topology": 1,
+        "concept": 2,
+        "primitive": 3,
+        "compose": 4,
+        "promote": 5,
+        "seed": 6,
     }
     unused = [
         c for c in registry.candidates if not c.used and not c.abandoned
@@ -720,9 +750,12 @@ def next_invention(
     )
 
     for cand in unused:
-        if cand.source in {"primitive", "concept", "topology"}:
+        if cand.source in {"primitive", "concept", "topology", "search"}:
             if cand.source == "topology" and cand.edit and cand.edit.get("kind") == "reparent":
                 # Re-parent uses existing poles — alphabet check on instance only.
+                pass
+            elif cand.source == "search" and cand.edit and cand.edit.get("kind") == "edit_ast":
+                # Search edit_ast may rehang existing poles or mint new names.
                 pass
             elif (
                 normalize(cand.cause) in alphabet
@@ -791,13 +824,29 @@ def invent_and_embody(
         topology_applied = topology_mod.apply_topology_edit(eng, proposal.edit)
         if topology_applied:
             store.save(eng.torus, mind_path)
+    elif proposal.source == "search" and proposal.edit and proposal.edit.get("kind") == "edit_ast":
+        from . import search_substrate as search_mod
 
-    # Body seed: bridge creates new poles; reparent reuses existing names as domain label.
+        topology_applied = search_mod.apply_edit_ast(eng, list(proposal.edit.get("ast") or []))
+        if topology_applied:
+            store.save(eng.torus, mind_path)
+
+    # Body seed: bridge creates new poles; reparent/rehang reuses existing names as domain label.
     if proposal.source == "topology" and proposal.edit and proposal.edit.get("kind") == "reparent":
         # Fresh opposite pair named from the reparent instance digest — body still dual.
         digest = normalize(proposal.instance).replace("reparent-", "")[:8]
         body_cause = f"rc{digest}"
         body_effect = f"re{digest}"
+        torus = seed_custom(body_cause, body_effect, instance=proposal.instance)
+    elif (
+        proposal.source == "search"
+        and proposal.edit
+        and proposal.edit.get("kind") == "edit_ast"
+        and normalize(proposal.instance).startswith("rehang-")
+    ):
+        digest = normalize(proposal.instance).replace("rehang-", "")[:8]
+        body_cause = f"sc{digest}c"
+        body_effect = f"sc{digest}e"
         torus = seed_custom(body_cause, body_effect, instance=proposal.instance)
     else:
         torus = seed_custom(proposal.cause, proposal.effect, instance=proposal.instance)

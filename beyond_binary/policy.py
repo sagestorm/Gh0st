@@ -584,6 +584,14 @@ def _eval_condition(
         return bool(result.get("pred"))
     if kind == "expr":
         return _eval_expr(spec, vec)
+    if kind == "expr_ast":
+        # SearchSubstrate open expression trees (not closed meta_prim kinds).
+        from . import search_substrate as search_mod
+
+        val = search_mod.eval_expr_ast(spec.get("tree"), vec)
+        if val is None:
+            return False
+        return bool(val)
     if kind == "all":
         return all(
             _eval_condition(c, policy, seed_counts, vec) for c in spec.get("of", [])
@@ -628,7 +636,14 @@ def revise_kinds_from_outcomes(
     # Optional generative substrate for novel reflect opcodes (default off).
     try:
         from . import substrate as substrate_mod
+        from . import search_substrate as search_mod
 
+        class _ReflectHandle:
+            pass
+
+        handle = _ReflectHandle()
+        handle._search_policy = policy  # noqa: SLF001
+        handle._search_vec = dict(vec)  # noqa: SLF001
         substrate_mod.consult(
             "reflect",
             {
@@ -636,8 +651,16 @@ def revise_kinds_from_outcomes(
                 "meta_isa_revisions": policy.meta_isa_revisions,
                 "proposed_meta": list(proposed_meta),
             },
-            center=None,
+            center=handle,
         )
+        for row in search_mod.drain_pending_reflect():
+            name = str(row.get("name") or "")
+            if not name or name in policy.condition_kinds:
+                continue
+            policy.condition_kinds[name] = {
+                k: v for k, v in row.items() if k != "name"
+            }
+            policy.kind_revisions += 1
     except Exception:  # noqa: BLE001
         pass
 

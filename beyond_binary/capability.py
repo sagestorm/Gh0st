@@ -400,6 +400,11 @@ def install_primitive(name: str, spec: dict[str, Any]) -> bool:
         return False
     if name in _SEED_PRIMITIVES:
         return False
+    # SearchSubstrate op_ast — open AST interpreter, not closed prim-spec kinds.
+    if str(spec.get("kind")) == "op_ast":
+        from . import search_substrate as search_mod
+
+        return search_mod.install_op_ast_primitive(name, dict(spec))
     fn = compile_primitive_spec(spec)
     if fn is None:
         return False
@@ -601,6 +606,9 @@ def _depth_safe(eng: Engine, name: str) -> int:
 
 
 def _insert_before_emit(program: CapProgram, step: dict[str, Any]) -> None:
+    op_name = str(step.get("op", ""))
+    if op_name and any(str(o.get("op", "")) == op_name for o in program.ops):
+        return
     emit_i = next(
         (i for i, o in enumerate(program.ops) if o.get("op") == "emit"),
         len(program.ops),
@@ -708,17 +716,38 @@ def evolve_program(program: CapProgram, eng: Engine) -> CapProgram:
     # Optional generative substrate for novel form primitives (default off).
     try:
         from . import substrate as substrate_mod
+        from . import search_substrate as search_mod
 
+        class _FormHandle:
+            pass
+
+        handle = _FormHandle()
+        handle._search_program = program  # noqa: SLF001
+        handle.engine = eng
         substrate_mod.consult(
             "form",
             {
+                "eng": eng,
                 "program_id": program.program_id,
                 "primitive_count": len(program.primitives),
                 "op_count": len(program.ops),
                 "node_count": len(eng.torus.nodes),
             },
-            center=None,
+            center=handle,
         )
+        for row in search_mod.drain_pending_form():
+            name = str(row.get("name") or "")
+            spec = dict(row.get("spec") or {})
+            if not name or name in program.primitives:
+                continue
+            if search_mod.install_op_ast_primitive(name, spec):
+                program.primitives[name] = dict(spec)
+                program.primitive_revisions += 1
+                _insert_before_emit(program, {"op": name})
+                into = str(spec.get("into", ""))
+                if into:
+                    _ensure_emit_field(program, into)
+                program.revisions += 1
     except Exception:  # noqa: BLE001
         pass
     return program

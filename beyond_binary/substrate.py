@@ -2,12 +2,12 @@
 
 Contract: store docs/generative-substrate-contract.md
 
-This module is the pluggable proposal-source boundary. The Living Center remains
-the authority for validate / accept / persist. No live external generator and no
-LLM wrapper ship here — ``NullSubstrate`` always returns empty proposals.
+Pluggable proposal-source boundary. The Living Center remains the authority
+for validate / accept / persist.
 
-Enable attempts via env ``BEYOND_BINARY_SUBSTRATE=1``. Until an authorized live
-implementation is registered, enable still resolves to NullSubstrate.
+- Default / unset → ``NullSubstrate`` (inactive)
+- ``BEYOND_BINARY_SUBSTRATE=1`` → still Null (fail closed without named impl)
+- ``BEYOND_BINARY_SUBSTRATE=search`` → in-process ``SearchSubstrate`` (non-LLM)
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 ENV_FLAG = "BEYOND_BINARY_SUBSTRATE"
 STDLIB_PROVENANCE_PREFIX = "stdlib-compiler:"
+SEARCH_PROVENANCE_PREFIX = "search-substrate:"
 
 Axis = Literal["invent", "reflect", "goal", "form"]
 AXES: frozenset[str] = frozenset({"invent", "reflect", "goal", "form"})
@@ -95,17 +96,33 @@ class NullSubstrate:
         return None
 
 
+def _flag_raw() -> str:
+    return str(os.environ.get(ENV_FLAG, "0")).strip().lower()
+
+
 def substrate_enabled() -> bool:
-    """True only when BEYOND_BINARY_SUBSTRATE is explicitly on."""
-    raw = os.environ.get(ENV_FLAG, "0")
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    """True when BEYOND_BINARY_SUBSTRATE is explicitly on (1/true/on/search)."""
+    return _flag_raw() in {"1", "true", "yes", "on", "search"}
+
+
+def substrate_impl_name() -> str:
+    """Requested implementation name from the env flag."""
+    raw = _flag_raw()
+    if raw == "search":
+        return "search"
+    if raw in {"1", "true", "yes", "on"}:
+        return "null"  # enable without named live impl → still null
+    return "null"
 
 
 def get_substrate() -> GenerativeSubstrate:
-    """Resolve substrate. Live impls must be authorized; none ship today."""
+    """Resolve substrate. ``search`` binds SearchSubstrate; else Null."""
     if not substrate_enabled():
         return NullSubstrate()
-    # Flag on but no registered live generator → still null (fail closed).
+    if substrate_impl_name() == "search":
+        from .search_substrate import SearchSubstrate
+
+        return SearchSubstrate()
     return NullSubstrate()
 
 
@@ -120,16 +137,23 @@ def is_stdlib_provenance(provenance: str) -> bool:
     return str(provenance).startswith(STDLIB_PROVENANCE_PREFIX)
 
 
+def is_search_provenance(provenance: str) -> bool:
+    return str(provenance).startswith(SEARCH_PROVENANCE_PREFIX)
+
+
 def center_validate(proposal: Proposal, center: Any) -> ValidationResult:
-    """Fail-closed center validation stub (no live applicator yet)."""
+    """Center-authoritative validation. Delegates to live substrate when bound."""
     if proposal.axis not in AXES:
         return Reject(f"unknown axis: {proposal.axis}")
     if is_stdlib_provenance(proposal.provenance):
         return Reject("stdlib-compiler provenance is not substrate evidence")
-    if center is None:
-        return Reject("center required for dual validation")
-    # Without an authorized applicator, opaque payloads cannot be installed safely.
-    return Reject("no live substrate applicator; fail closed")
+    if center is None and proposal.axis in {"invent", "form"}:
+        return Reject("center/engine required for dual validation")
+    sub = get_substrate()
+    if sub.name == "null":
+        return Reject("no live substrate applicator; fail closed")
+    # Live substrate validates (dual / I1 / axis invariants).
+    return sub.validate(proposal, center)
 
 
 def consult(
@@ -140,14 +164,15 @@ def consult(
 ) -> list[dict[str, Any]]:
     """Optional hook used by invent/policy/goals/capability.
 
-    When the flag is off (default), returns immediately with no substrate call
-    side effects beyond status bookkeeping. When on, proposes → validates →
-    accept only if center validation passes. NullSubstrate yields [].
+    When the flag is off (default), returns immediately. When on, proposes →
+    validates → accept only if validation passes. Rejects are logged.
     """
     if not substrate_enabled():
         return []
     ctx = dict(context or {})
     ctx.setdefault("axis", axis)
+    if center is not None:
+        ctx.setdefault("center", center)
     sub = get_substrate()
     out: list[dict[str, Any]] = []
     for prop in sub.propose(ctx):
@@ -194,13 +219,20 @@ def consult(
                 }
             )
             continue
+        dedupe_key = (str(prop.axis), str(artifact))
+        if any(
+            str(a.get("axis")) == dedupe_key[0]
+            and str(a.get("artifact_id")) == dedupe_key[1]
+            for a in _ACCEPT_LOG
+        ):
+            continue
         row = {
             "proposal_id": prop.proposal_id,
             "axis": prop.axis,
             "artifact_id": artifact,
             "provenance": prop.provenance,
         }
-        _ACCEPT_LOG.append(row)
+        _ACCEPT_LOG.append(dict(row))
         out.append(row)
     return out
 
@@ -231,3 +263,15 @@ def reset_logs_for_tests() -> None:
     """Clear accept/reject logs (tests only)."""
     _REJECT_LOG.clear()
     _ACCEPT_LOG.clear()
+    try:
+        from . import search_substrate as ss
+
+        ss.reset_pending_for_tests()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def all_axes_have_non_stdlib_accepts() -> bool:
+    """True iff invent|reflect|goal|form each have ≥1 non-stdlib accept."""
+    axes = set(status().get("axes_with_non_stdlib_accepts") or [])
+    return AXES <= axes

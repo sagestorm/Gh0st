@@ -692,6 +692,79 @@ class SubstrateInterfaceTests(unittest.TestCase):
         self.assertEqual(substrate_mod.get_substrate().name, "null")
         self.assertEqual(substrate_mod.consult("reflect", {"vec": {}}), [])
 
+    def test_search_flag_binds_active_substrate(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        self.assertTrue(substrate_mod.substrate_enabled())
+        self.assertTrue(substrate_mod.is_active())
+        self.assertEqual(substrate_mod.get_substrate().name, "search")
+
+    def test_search_substrate_accepts_all_four_axes(self):
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import search_substrate as search_mod
+        from beyond_binary.center import LivingCenter
+        from beyond_binary.engine import Engine
+        from beyond_binary.seed import seed_same_center
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        eng = Engine(seed_same_center(("thermal", "ontology"), minimal=True))
+        center = LivingCenter(eng)
+        center.engine = eng
+
+        class H:
+            pass
+
+        h = H()
+        h.engine = eng
+        h._search_vec = {  # noqa: SLF001
+            "fruitful": 2.0,
+            "stalled": 1.0,
+            "flags": 1.0,
+            "node_delta": 3.0,
+        }
+        h._search_goal_board = __import__(
+            "beyond_binary.goals", fromlist=["GoalBoard"]
+        ).GoalBoard()
+        from beyond_binary import capability as cap_mod
+
+        h._search_program = cap_mod.CapProgram(body_name="test")  # noqa: SLF001
+
+        substrate_mod.consult(
+            "invent",
+            {"eng": eng, "used_instances": []},
+            center=h,
+        )
+        substrate_mod.consult("reflect", {"vec": h._search_vec}, center=h)
+        substrate_mod.consult(
+            "goal",
+            {
+                "fruitful": 2,
+                "stalled": 1,
+                "flags": 1,
+                "invent_summary": {"abandoned_count": 1},
+            },
+            center=h,
+        )
+        substrate_mod.consult("form", {"eng": eng}, center=h)
+
+        st = substrate_mod.status()
+        axes = set(st.get("axes_with_non_stdlib_accepts") or [])
+        self.assertTrue(
+            {"invent", "reflect", "goal", "form"} <= axes,
+            msg=f"axes={axes} accepts={st.get('accepted_non_stdlib')}",
+        )
+        for row in st.get("accepted_non_stdlib") or []:
+            self.assertTrue(
+                str(row.get("provenance", "")).startswith(
+                    search_mod.PROVENANCE_PREFIX
+                )
+            )
+        self.assertTrue(substrate_mod.all_axes_have_non_stdlib_accepts())
+
 
 class VerifyFarVisionTests(unittest.TestCase):
     def test_verify_reports_incomplete_sentience(self):
@@ -705,8 +778,8 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertFalse(report["complete"])
         by_id = {g["id"]: g for g in report["gates"]}
         self.assertFalse(by_id["SENTIENCE"]["ok"])
-        self.assertIn("HARD PLATEAU", by_id["SENTIENCE"]["evidence"])
-        self.assertIn("inactive", by_id["SENTIENCE"]["evidence"])
+        self.assertIn("Goal incomplete", by_id["SENTIENCE"]["evidence"])
+        self.assertIn("non-stdlib", by_id["SENTIENCE"]["evidence"].lower())
         self.assertTrue(by_id["SUB"]["ok"])
         self.assertTrue(by_id["I1"]["ok"])
         self.assertTrue(by_id["I5"]["ok"])

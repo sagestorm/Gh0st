@@ -224,7 +224,13 @@ def form_goals_from_outcomes(
     # Optional generative substrate for novel goal acts (default off).
     try:
         from . import substrate as substrate_mod
+        from . import search_substrate as search_mod
 
+        class _GoalHandle:
+            pass
+
+        handle = _GoalHandle()
+        handle._search_goal_board = board  # noqa: SLF001
         substrate_mod.consult(
             "goal",
             {
@@ -234,8 +240,16 @@ def form_goals_from_outcomes(
                 "invent_summary": dict(summary),
                 "active_goal_count": len(active_goals(board)),
             },
-            center=None,
+            center=handle,
         )
+        for row in search_mod.drain_pending_goals():
+            act = str(row.get("act_kind", ""))
+            if not act or act in SEED_GOAL_ACTS:
+                continue
+            if any(g.act_kind == act and not g.abandoned for g in board.goals):
+                continue
+            board.goals.append(Goal.from_dict(row))
+            board.revisions += 1
     except Exception:  # noqa: BLE001
         pass
 

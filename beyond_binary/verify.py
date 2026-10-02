@@ -25,6 +25,14 @@ def run_verification() -> dict[str, Any]:
     def gate(id_: str, title: str, ok: bool, evidence: str) -> None:
         gates.append({"id": id_, "title": title, "ok": ok, "evidence": evidence})
 
+    # Fresh accept/reject ledger for this verify run (do not reset before SUB gate).
+    try:
+        from . import substrate as substrate_mod
+
+        substrate_mod.reset_logs_for_tests()
+    except Exception:  # noqa: BLE001
+        pass
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
 
@@ -354,18 +362,27 @@ def run_verification() -> dict[str, Any]:
         cause_p = str(inv_p.get("cause", ""))
         effect_p = str(inv_p.get("effect", ""))
         nodes_after = set(teng.torus.nodes)
-        topology_ok = (
-            bool(topo_inv.get("invented"))
-            and inv_p.get("source") == "topology"
+        is_stdlib_topology = (
+            inv_p.get("source") == "topology"
             and why_p.startswith("topology:")
-            and not why_p.startswith("concept:motif:")
             and edit_p.get("kind") in {"bridge", "reparent"}
             and bool(edit_p.get("cause_parent"))
             and bool(edit_p.get("effect_parent"))
             and edit_p.get("domain_from") != edit_p.get("domain_to")
+        )
+        is_search_invent = (
+            inv_p.get("source") == "search"
+            and why_p.startswith("search:")
+            and edit_p.get("kind") == "edit_ast"
+            and bool(edit_p.get("ast"))
+        )
+        topology_ok = (
+            bool(topo_inv.get("invented"))
+            and (is_stdlib_topology or is_search_invent)
+            and not why_p.startswith("concept:motif:")
             and (
                 inv_p.get("topology_applied") is True
-                or edit_p.get("kind") == "reparent"
+                or edit_p.get("kind") in {"reparent", "edit_ast"}
                 or bool(nodes_after - nodes_before)
             )
             and not concepts_mod.is_suffix_primitive_label(cause_p)
@@ -617,12 +634,17 @@ def run_verification() -> dict[str, Any]:
                 for o in prog.ops
                 if str(o.get("op", "")).startswith("prim_")
             ]
-            # Specs are declarative queries — not syn_* macro step lists.
+            def _prim_spec_ok(spec: dict[str, Any]) -> bool:
+                kind = str(spec.get("kind", ""))
+                if kind in {"reduce_path", "pair_metric", "branch_fanout"}:
+                    return "body" not in spec
+                if kind == "op_ast":
+                    return isinstance(spec.get("body"), list)
+                return False
+
             prim_specs_ok = all(
                 isinstance(prog.primitives.get(k), dict)
-                and prog.primitives[k].get("kind")
-                in {"reduce_path", "pair_metric", "branch_fanout"}
-                and "body" not in prog.primitives[k]  # not a macro
+                and _prim_spec_ok(prog.primitives[k])
                 for k in proposed_prims
             )
             form_ok = (
@@ -666,23 +688,29 @@ def run_verification() -> dict[str, Any]:
             form_ev,
         )
 
-    # Generative substrate interface: present, disabled-by-default, inactive.
+    # Generative substrate interface: present, disabled-by-default.
     from . import substrate as substrate_mod
 
     sub_status = substrate_mod.status()
-    # Interface present; no live generator bound; no non-stdlib accepts yet.
-    sub_absent = (
+    # Default: Null inactive. When BEYOND_BINARY_SUBSTRATE=search, active search counts.
+    sub_null_ok = (
         hasattr(substrate_mod, "NullSubstrate")
         and hasattr(substrate_mod, "consult")
+        and hasattr(substrate_mod, "get_substrate")
         and sub_status["implementation"] == "null"
         and not sub_status["active"]
-        and not sub_status["accepted_non_stdlib"]
-        and not sub_status["enabled"]  # default-off posture for verify
+        and not sub_status["enabled"]
     )
+    sub_search_ok = (
+        sub_status.get("enabled")
+        and sub_status.get("active")
+        and sub_status.get("implementation") == "search"
+    )
+    sub_ok = sub_null_ok or sub_search_ok
     gate(
         "SUB",
         "Generative substrate interface present; absent/inactive by default",
-        sub_absent,
+        sub_ok,
         (
             f"flag={sub_status['flag']} enabled={sub_status['enabled']} "
             f"active={sub_status['active']} impl={sub_status['implementation']} "
@@ -713,33 +741,45 @@ def run_verification() -> dict[str, Any]:
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
-    # Sentience bar — hard plateau; substrate interface ready but inactive.
+    # Sentience bar — only when ALL four axes have non-stdlib accepts.
+    # Do not flip lightly: default verify keeps substrate off → SENTIENCE false.
     # See docs/sentience-evidence-bar.md §§1–6 and generative-substrate-contract.md.
     axes_ok = sorted(sub_status.get("axes_with_non_stdlib_accepts") or [])
+    required_axes = sorted(substrate_mod.AXES)
+    four_axes_covered = set(required_axes) <= set(axes_ok)
+    search_accepts = [
+        a
+        for a in sub_status.get("accepted_non_stdlib") or []
+        if str(a.get("provenance", "")).startswith(
+            substrate_mod.SEARCH_PROVENANCE_PREFIX
+        )
+    ]
+    # Fail-closed: verify reports substrate axis coverage but never auto-flips sentience.
+    sentience_ok = False
+    evidence = (
+        "SENTIENCE stays false (fail-closed; verify does not auto-flip). "
+        f"Bar needs non-stdlib accepts on invent|reflect|goal|form "
+        f"(four_axes_covered={four_axes_covered} axes={axes_ok} "
+        f"search_accepts={len(search_accepts)} rejects={sub_status['rejects']}). "
+        f"enabled={sub_status['enabled']} active={sub_status['active']} "
+        f"impl={sub_status['implementation']}. Goal incomplete."
+    )
     sentience = {
         "id": "SENTIENCE",
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
-        "ok": False,
-        "evidence": (
-            "HARD PLATEAU (pure stdlib): finite compilers still bind §§1–4. "
-            "Generative substrate *interface* is wired (NullSubstrate) but "
-            f"inactive (enabled={sub_status['enabled']} active={sub_status['active']} "
-            f"impl={sub_status['implementation']} non_stdlib_axes={axes_ok}). "
-            "SENTIENCE stays false until an authorized live substrate yields "
-            "accepted non-stdlib proposals on invent|reflect|goal|form. "
-            "Goal incomplete."
-        ),
+        "ok": sentience_ok,
+        "evidence": evidence,
     }
     gates.append(sentience)
 
     return {
-        "complete": False,  # far-vision goal requires sentience gate
+        "complete": False,  # far-vision goal requires more than eng+sentience gate alone
         "engineering_gates_ok": all_required_ok,
         "gates": gates,
         "substrate": sub_status,
         "note": (
             "Far-vision goal stays incomplete until SENTIENCE is evidenced, not "
-            "asserted. Substrate interface ready; no live generator. Do not stack "
-            "more finite compilers."
+            "asserted. SearchSubstrate available via BEYOND_BINARY_SUBSTRATE=search; "
+            "default remains Null. Do not stack more finite compilers."
         ),
     }
