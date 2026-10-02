@@ -1033,6 +1033,9 @@ def product_exceed_reasons(
     - shorter path on a present cascade probe, or lower probe_path_len_total
     - StructuralScore.better_than (coverage / symmetry / unused cost / leaner)
     - more answerable cascade/motif probes (usable coverage) without lengthening paths
+
+    #15: usable_probe_coverage alone is ephemeral vs Null (motif fill). Durable
+    invent selection uses ``durable_product_exceed_reasons``.
     """
     reasons: list[str] = []
     if post is not None and pre is not None and post.better_than(pre):
@@ -1066,13 +1069,32 @@ def product_exceed_reasons(
     return reasons
 
 
+def durable_product_exceed_reasons(reasons: list[str] | tuple[str, ...]) -> list[str]:
+    """#15: path-shorten / structural exceeds that survive Null comparison.
+
+    Strips usable_probe_coverage — motif adds that only expand the live probe set
+    are path-neutral vs shared Null probes and must not burn the invent drain.
+    """
+    out: list[str] = []
+    for reason in reasons:
+        if reason == "structural_score" or reason == "probe_path_len_total":
+            out.append(reason)
+        elif reason.startswith("probe_path_shorter:"):
+            out.append(reason)
+    return out
+
+
 def search_has_product_exceed_candidate(
     eng: Engine,
     *,
     used_instances: set[str] | None = None,
     limit: int = 6,
 ) -> bool:
-    """#10: True when search still has ≥1 invent AST that earns a product exceed."""
+    """#10/#15: True when search still has ≥1 durable product-exceed invent AST.
+
+    Durable = path shorten / structural_score. Motif usable_probe_coverage alone
+    does not keep the exceed pool open (#15 — avoid path-neutral motif burn).
+    """
     from . import search_substrate as search_mod
     from .center import LivingCenter
 
@@ -1087,7 +1109,8 @@ def search_has_product_exceed_candidate(
         if not search_mod.apply_edit_ast(trial, ast):
             continue
         post = LivingCenter(trial).score()
-        if product_exceed_reasons(eng, trial, pre, post):
+        reasons = product_exceed_reasons(eng, trial, pre, post)
+        if durable_product_exceed_reasons(reasons):
             return True
     return False
 
@@ -1113,8 +1136,11 @@ def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, An
     # #6/#7: probe path length must not regress on any measured probe.
     if not _probe_path_economy_ok(eng, trial):
         return False, pre, post, "probe_path_len"
-    # #9/#10: product exceed always ok; meet-only only when no exceed remains (C4).
-    if product_exceed_reasons(eng, trial, pre, post):
+    # #9/#10/#15: durable product exceed always ok; meet-only / coverage-only
+    # only when no durable exceed remains (C4). Motif usable_probe_coverage alone
+    # must not clear the gate while a path/structural exceed is still available.
+    reasons = product_exceed_reasons(eng, trial, pre, post)
+    if durable_product_exceed_reasons(reasons):
         return True, pre, post, "ok"
     if search_has_product_exceed_candidate(eng):
         return False, pre, post, "meet_only_while_exceed"
