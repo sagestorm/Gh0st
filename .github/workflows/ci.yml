@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s beyond_binary/tests -v
+
+      - name: verify-far-vision (default / Null fail-closed)
+        run: |
+          set +e
+          python3 -m beyond_binary verify-far-vision > /tmp/verify-default.json
+          code=$?
+          set -e
+          python3 - <<'PY'
+          import json, sys
+          report = json.load(open("/tmp/verify-default.json"))
+          by_id = {g["id"]: g for g in report["gates"]}
+          sent = by_id["SENTIENCE"]
+          ok = (
+              report.get("engineering_gates_ok") is True
+              and sent.get("ok") is False
+              and report.get("complete") is False
+          )
+          if not ok:
+              print("FAIL default verify expectations", file=sys.stderr)
+              print(
+                  f"eng={report.get('engineering_gates_ok')} "
+                  f"SENTIENCE={sent.get('ok')} complete={report.get('complete')}",
+                  file=sys.stderr,
+              )
+              print(sent.get("evidence", ""), file=sys.stderr)
+              sys.exit(1)
+          print("OK default JSON: eng=true SENTIENCE=false complete=false")
+          PY
+          # Default path must stay incomplete (CLI exits 2 when complete=false).
+          if [ "$code" -ne 2 ]; then
+            echo "expected exit 2 for incomplete default verify, got $code" >&2
+            exit 1
+          fi
+          echo "OK default: eng=true SENTIENCE=false complete=false exit=2"
+
+      - name: verify-far-vision (search substrate)
+        env:
+          BEYOND_BINARY_SUBSTRATE: search
+        run: |
+          set +e
+          python3 -m beyond_binary verify-far-vision > /tmp/verify-search.json
+          code=$?
+          set -e
+          python3 - <<'PY'
+          import json, sys
+          report = json.load(open("/tmp/verify-search.json"))
+          by_id = {g["id"]: g for g in report["gates"]}
+          sent = by_id["SENTIENCE"]
+          ok = (
+              report.get("engineering_gates_ok") is True
+              and sent.get("ok") is True
+              and report.get("complete") is True
+          )
+          if not ok:
+              print("FAIL search verify expectations", file=sys.stderr)
+              print(
+                  f"eng={report.get('engineering_gates_ok')} "
+                  f"SENTIENCE={sent.get('ok')} complete={report.get('complete')}",
+                  file=sys.stderr,
+              )
+              print(sent.get("evidence", ""), file=sys.stderr)
+              print(report.get("note", ""), file=sys.stderr)
+              sys.exit(1)
+          print("OK search: eng=true SENTIENCE=true complete=true")
+          PY
+          if [ "$code" -ne 0 ]; then
+            echo "expected exit 0 for complete search verify, got $code" >&2
+            exit 1
+          fi
+          echo "OK search: eng=true SENTIENCE=true complete=true exit=0"
