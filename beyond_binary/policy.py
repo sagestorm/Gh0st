@@ -701,12 +701,10 @@ def revise_kinds_from_outcomes(
         from . import substrate as substrate_mod
         from . import search_substrate as search_mod
 
-        class _ReflectHandle:
-            pass
-
-        handle = _ReflectHandle()
-        handle._search_policy = policy  # noqa: SLF001
-        handle._search_vec = dict(vec)  # noqa: SLF001
+        handle = substrate_mod.ReflectConsultContext(
+            policy=policy,
+            vec=dict(vec),
+        )
         substrate_mod.consult(
             "reflect",
             {

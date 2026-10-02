@@ -691,6 +691,9 @@ class SubstrateInterfaceTests(unittest.TestCase):
         self.assertFalse(substrate_mod.is_active())
         self.assertEqual(substrate_mod.get_substrate().name, "null")
         self.assertEqual(substrate_mod.consult("reflect", {"vec": {}}), [])
+        st = substrate_mod.status()
+        self.assertTrue(st.get("enabled_without_live_impl"))
+        self.assertIn("still Null", st.get("honesty", ""))
 
     def test_search_flag_binds_active_substrate(self):
         import os
@@ -866,6 +869,66 @@ class SubstrateInterfaceTests(unittest.TestCase):
             strat.get("expr_kinds") or any(r.rule_id in (strat.get("active_rules") or []) for r in wired),
             msg=f"strategy={strat}",
         )
+
+    def test_consult_invent_without_engine_rejects_under_search(self):
+        """G9: no silent empty propose when live substrate lacks engine."""
+        import os
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        try:
+            before = substrate_mod.status()["rejects"]
+            out = substrate_mod.consult("invent", {}, center=None)
+            self.assertEqual(out, [])
+            after = substrate_mod.status()["rejects"]
+            self.assertGreaterEqual(after, before + 1)
+        finally:
+            os.environ.pop(substrate_mod.ENV_FLAG, None)
+            substrate_mod.reset_logs_for_tests()
+
+    def test_g13_search_skips_closed_outcome_goal_templates(self):
+        import os
+        from beyond_binary import goals as goals_mod
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary.journal import JournalEntry
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        try:
+            board = goals_mod.GoalBoard()
+            rows = [
+                JournalEntry(
+                    cycle=i,
+                    reflection="growth_fruitful" if i < 3 else "challenge_pressure",
+                    signals={"flags": 1 if i >= 3 else 0},
+                    strategy_hint="invent" if i >= 2 else "grow",
+                )
+                for i in range(5)
+            ]
+            summary = {
+                "prefer_source": "topology",
+                "abandoned_sources": ["concept"],
+                "abandoned_count": 1,
+            }
+            board = goals_mod.form_goals_from_outcomes(
+                board, rows, invent_summary=summary
+            )
+            closed = {
+                "seek_topology_bridge",
+                "retire_invent_pressure",
+                "propose_body_primitive",
+                "deepen_nurture_lineage",
+            }
+            acts = {g.act_kind for g in board.goals if not g.abandoned}
+            self.assertFalse(acts & closed, msg=f"closed menu leaked: {acts}")
+            self.assertTrue(
+                any(a.startswith("search_act_") for a in acts),
+                msg=f"expected search_act_* got {acts}",
+            )
+        finally:
+            os.environ.pop(substrate_mod.ENV_FLAG, None)
+            substrate_mod.reset_logs_for_tests()
 
     def test_consult_error_is_recorded_not_swallowed(self):
         """G6: caller-path consult failures hit reject/error logs."""

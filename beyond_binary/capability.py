@@ -805,12 +805,10 @@ def evolve_program(program: CapProgram, eng: Engine) -> CapProgram:
         from . import substrate as substrate_mod
         from . import search_substrate as search_mod
 
-        class _FormHandle:
-            pass
-
-        handle = _FormHandle()
-        handle._search_program = program  # noqa: SLF001
-        handle.engine = eng
+        handle = substrate_mod.FormConsultContext(
+            engine=eng,
+            program=program,
+        )
         substrate_mod.consult(
             "form",
             {

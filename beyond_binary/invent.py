@@ -742,12 +742,10 @@ def refresh_invent_registry(
         from . import search_substrate as search_mod
 
         # Handle for SearchSubstrate.accept to append into this registry.
-        class _InventHandle:
-            pass
-
-        handle = _InventHandle()
-        handle.engine = eng
-        handle._search_invent_registry = registry  # noqa: SLF001
+        handle = substrate_mod.InventConsultContext(
+            engine=eng,
+            invent_registry=registry,
+        )
         substrate_mod.consult(
             "invent",
             {

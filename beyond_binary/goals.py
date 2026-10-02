@@ -157,6 +157,46 @@ def form_goals_from_outcomes(
 
     existing = {(g.act_kind, g.target) for g in board.goals if not g.abandoned}
 
+    from . import substrate as substrate_mod
+
+    search_live = substrate_mod.is_active() and substrate_mod.substrate_impl_name() == "search"
+
+    # G13: when search substrate is live, mint goals via consult before closed menus.
+    if search_live:
+        try:
+            from . import search_substrate as search_mod
+
+            handle = substrate_mod.GoalConsultContext(goal_board=board)
+            substrate_mod.consult(
+                "goal",
+                {
+                    "fruitful": fruitful,
+                    "stalled": stalled,
+                    "flags": flags,
+                    "invent_summary": dict(summary),
+                    "active_goal_count": len(active_goals(board)),
+                },
+                center=handle,
+            )
+            for row in search_mod.drain_pending_goals():
+                act = str(row.get("act_kind", ""))
+                if not act or act in SEED_GOAL_ACTS:
+                    continue
+                hit = next(
+                    (g for g in board.goals if g.act_kind == act and not g.abandoned),
+                    None,
+                )
+                if hit is not None:
+                    tree = row.get("tree")
+                    if hit.tree is None and isinstance(tree, dict):
+                        hit.tree = dict(tree)
+                        board.revisions += 1
+                    continue
+                board.goals.append(Goal.from_dict(row))
+                board.revisions += 1
+        except Exception as exc:  # noqa: BLE001
+            substrate_mod.record_consult_error("goal", exc)
+
     def _upsert(act_kind: str, target: str, reason: str, priority: float) -> None:
         nonlocal board
         key = (act_kind, target)
@@ -180,6 +220,16 @@ def form_goals_from_outcomes(
         )
         existing.add(key)
         board.revisions += 1
+
+    # Closed outcome menu — skip when search substrate supplies search_act_* (G13).
+    if search_live:
+        if flags >= 2 and invent_hints >= 1:
+            for g in board.goals:
+                if g.act_kind in SEED_GOAL_ACTS and not g.abandoned:
+                    g.abandoned = True
+                    g.priority = 0.1
+                    board.revisions += 1
+        return board
 
     # Novel act: seek topology when multi-domain invent is preferred / abandoned concept.
     if prefer_source == "topology" or "concept" in abandoned_sources:
@@ -227,49 +277,6 @@ def form_goals_from_outcomes(
                 g.abandoned = True
                 g.priority = 0.1
                 board.revisions += 1
-
-    # Optional generative substrate for novel goal acts (default off).
-    try:
-        from . import substrate as substrate_mod
-        from . import search_substrate as search_mod
-
-        class _GoalHandle:
-            pass
-
-        handle = _GoalHandle()
-        handle._search_goal_board = board  # noqa: SLF001
-        substrate_mod.consult(
-            "goal",
-            {
-                "fruitful": fruitful,
-                "stalled": stalled,
-                "flags": flags,
-                "invent_summary": dict(summary),
-                "active_goal_count": len(active_goals(board)),
-            },
-            center=handle,
-        )
-        for row in search_mod.drain_pending_goals():
-            act = str(row.get("act_kind", ""))
-            if not act or act in SEED_GOAL_ACTS:
-                continue
-            existing = next(
-                (g for g in board.goals if g.act_kind == act and not g.abandoned),
-                None,
-            )
-            if existing is not None:
-                tree = row.get("tree")
-                if existing.tree is None and isinstance(tree, dict):
-                    existing.tree = dict(tree)
-                    board.revisions += 1
-                continue
-            board.goals.append(Goal.from_dict(row))
-            board.revisions += 1
-    except Exception as exc:  # noqa: BLE001
-        # G6: do not swallow substrate failures silently.
-        from . import substrate as _sub
-
-        _sub.record_consult_error("goal", exc)
 
     return board
 

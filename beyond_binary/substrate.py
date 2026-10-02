@@ -83,6 +83,78 @@ class GenerativeSubstrate(Protocol):
         """Persist an accepted proposal; return artifact id or None."""
 
 
+# --- G9 typed consult contexts (invent/form require a resolvable engine) ---
+
+
+@dataclass
+class InventConsultContext:
+    """Invent-axis handle: dual validation needs a live Engine."""
+
+    engine: Any
+    invent_registry: Any = None
+
+    @property
+    def _search_invent_registry(self) -> Any:
+        return self.invent_registry
+
+
+@dataclass
+class FormConsultContext:
+    """Form-axis handle: dual validation needs a live Engine."""
+
+    engine: Any
+    program: Any = None
+
+    @property
+    def _search_program(self) -> Any:
+        return self.program
+
+
+@dataclass
+class GoalConsultContext:
+    """Goal-axis handle: board receives search-minted act ASTs."""
+
+    goal_board: Any = None
+
+    @property
+    def _search_goal_board(self) -> Any:
+        return self.goal_board
+
+
+@dataclass
+class ReflectConsultContext:
+    """Reflect-axis handle: policy + signal vec for expr_ast install."""
+
+    policy: Any = None
+    vec: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def _search_policy(self) -> Any:
+        return self.policy
+
+    @property
+    def _search_vec(self) -> dict[str, float]:
+        return self.vec
+
+
+def resolve_engine(center: Any) -> Any | None:
+    """Return Engine from a typed handle / LivingCenter / Engine, else None."""
+    if center is None:
+        return None
+    from .engine import Engine
+
+    if isinstance(center, Engine):
+        return center
+    eng = getattr(center, "engine", None)
+    return eng if isinstance(eng, Engine) else None
+
+
+def enabled_without_live_impl() -> bool:
+    """True when flag looks 'on' (1/true/on) but binds Null — G5 honesty."""
+    raw = _flag_raw()
+    return raw in {"1", "true", "yes", "on"} and substrate_impl_name() == "null"
+
+
 class NullSubstrate:
     """Default substrate — no proposals, fail-closed validate/accept."""
 
@@ -149,7 +221,7 @@ def center_validate(proposal: Proposal, center: Any) -> ValidationResult:
         return Reject(f"unknown axis: {proposal.axis}")
     if is_stdlib_provenance(proposal.provenance):
         return Reject("stdlib-compiler provenance is not substrate evidence")
-    if center is None and proposal.axis in {"invent", "form"}:
+    if proposal.axis in {"invent", "form"} and resolve_engine(center) is None:
         return Reject("center/engine required for dual validation")
     sub = get_substrate()
     if sub.name == "null":
@@ -190,6 +262,9 @@ def consult(
 
     When the flag is off (default), returns immediately. When on, proposes →
     validates → accept only if validation passes. Rejects are logged.
+
+    G9: invent/form without a resolvable Engine rejects (no silent empty propose
+    under a live substrate).
     """
     if not substrate_enabled():
         return []
@@ -198,6 +273,24 @@ def consult(
     if center is not None:
         ctx.setdefault("center", center)
     sub = get_substrate()
+    # G9: invent/form need an engine — reject when live substrate cannot resolve one.
+    if axis in {"invent", "form"} and sub.name != "null":
+        from .engine import Engine
+
+        eng = ctx.get("eng")
+        if not isinstance(eng, Engine):
+            eng = resolve_engine(center)
+        if eng is None:
+            _REJECT_LOG.append(
+                {
+                    "proposal_id": None,
+                    "axis": axis,
+                    "reason": "consult rejected: engine required for invent/form",
+                    "provenance": "caller",
+                }
+            )
+            return []
+        ctx.setdefault("eng", eng)
     out: list[dict[str, Any]] = []
     for prop in sub.propose(ctx):
         if prop.axis != axis:
@@ -269,11 +362,24 @@ def status() -> dict[str, Any]:
         for a in _ACCEPT_LOG
         if not is_stdlib_provenance(str(a.get("provenance", "")))
     ]
+    no_live = enabled_without_live_impl()
     return {
         "flag": ENV_FLAG,
+        "flag_value": _flag_raw() or "0",
         "enabled": substrate_enabled(),
         "active": is_active(),
         "implementation": sub.name,
+        # G5: flag=1/true/on looks enabled but still binds Null — not a live path.
+        "enabled_without_live_impl": no_live,
+        "honesty": (
+            "flag enables without named live impl; still Null (use =search)"
+            if no_live
+            else (
+                "search substrate bound"
+                if sub.name == "search" and is_active()
+                else "Null substrate (fail-closed default)"
+            )
+        ),
         "rejects": len(_REJECT_LOG),
         "accepts": len(_ACCEPT_LOG),
         "accepted_non_stdlib": list(non_stdlib_accepts),

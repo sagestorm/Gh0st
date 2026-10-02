@@ -888,13 +888,17 @@ def run_verification() -> dict[str, Any]:
 
     sub_status = substrate_mod.status()
     # Default: Null inactive. When BEYOND_BINARY_SUBSTRATE=search, active search counts.
+    # G5: flag=1/true/on enables but stays Null — honest, not silent live path.
     sub_null_ok = (
         hasattr(substrate_mod, "NullSubstrate")
         and hasattr(substrate_mod, "consult")
         and hasattr(substrate_mod, "get_substrate")
         and sub_status["implementation"] == "null"
         and not sub_status["active"]
-        and not sub_status["enabled"]
+        and (
+            not sub_status["enabled"]
+            or bool(sub_status.get("enabled_without_live_impl"))
+        )
     )
     sub_search_ok = (
         sub_status.get("enabled")
@@ -908,12 +912,35 @@ def run_verification() -> dict[str, Any]:
         "Generative substrate interface present; absent/inactive by default",
         sub_ok,
         (
-            f"flag={sub_status['flag']} enabled={sub_status['enabled']} "
+            f"flag={sub_status['flag']} flag_value={sub_status.get('flag_value')} "
+            f"enabled={sub_status['enabled']} "
+            f"enabled_without_live_impl={sub_status.get('enabled_without_live_impl')} "
+            f"honesty={sub_status.get('honesty')} "
             f"active={sub_status['active']} impl={sub_status['implementation']} "
             f"accepts_non_stdlib={len(sub_status['accepted_non_stdlib'])} "
             f"rejects={sub_status['rejects']} "
             f"consult_errors={sub_status.get('consult_error_count', 0)}"
         ),
+    )
+
+    # G9: live search path rejects invent/form consult without resolvable engine.
+    g9_ok = True
+    g9_ev = "Null default — invent/form without engine not on live substrate"
+    if sub_status.get("active") and sub_status.get("implementation") == "search":
+        rejects_before = int(sub_status.get("rejects") or 0)
+        substrate_mod.consult("invent", {}, center=None)
+        substrate_mod.consult("form", {}, center=None)
+        rejects_after = int(substrate_mod.status().get("rejects") or 0)
+        g9_ok = rejects_after >= rejects_before + 2
+        g9_ev = (
+            f"rejects {rejects_before}->{rejects_after} "
+            "(invent+form consult without engine must reject)"
+        )
+    gate(
+        "G9",
+        "Typed consult contexts; invent/form without engine reject on live path",
+        g9_ok,
+        g9_ev,
     )
 
     required = [
@@ -937,6 +964,7 @@ def run_verification() -> dict[str, Any]:
         "I5",
         "I6",
         "SUB",
+        "G9",
     ]
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
