@@ -778,8 +778,9 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertFalse(report["complete"])
         by_id = {g["id"]: g for g in report["gates"]}
         self.assertFalse(by_id["SENTIENCE"]["ok"])
+        self.assertIn("fail-closed", by_id["SENTIENCE"]["evidence"].lower())
         self.assertIn("Goal incomplete", by_id["SENTIENCE"]["evidence"])
-        self.assertIn("non-stdlib", by_id["SENTIENCE"]["evidence"].lower())
+        self.assertIn("search-substrate", by_id["SENTIENCE"]["evidence"])
         self.assertTrue(by_id["SUB"]["ok"])
         self.assertTrue(by_id["I1"]["ok"])
         self.assertTrue(by_id["I5"]["ok"])
@@ -789,6 +790,41 @@ class VerifyFarVisionTests(unittest.TestCase):
         self.assertTrue(by_id["C6s"]["ok"])
         self.assertTrue(report["engineering_gates_ok"])
         self.assertEqual(report.get("substrate", {}).get("implementation"), "null")
+        self.assertEqual(
+            report.get("substrate", {}).get("axes_with_non_stdlib_accepts") or [],
+            [],
+        )
+
+    def test_verify_sentience_true_when_search_four_axes(self):
+        """SENTIENCE.ok only when search substrate covers invent|reflect|goal|form."""
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import verify
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        try:
+            substrate_mod.reset_logs_for_tests()
+            report = verify.run_verification()
+            by_id = {g["id"]: g for g in report["gates"]}
+            sub = report.get("substrate") or {}
+            axes = set(sub.get("axes_with_non_stdlib_accepts") or [])
+            self.assertTrue(report["engineering_gates_ok"])
+            self.assertTrue(by_id["SUB"]["ok"])
+            self.assertEqual(sub.get("implementation"), "search")
+            self.assertTrue(
+                {"invent", "reflect", "goal", "form"} <= axes,
+                msg=f"axes={axes}",
+            )
+            self.assertTrue(
+                by_id["SENTIENCE"]["ok"],
+                msg=by_id["SENTIENCE"]["evidence"],
+            )
+            self.assertIn("SENTIENCE true", by_id["SENTIENCE"]["evidence"])
+            # Gate may be green; Project goal stays incomplete.
+            self.assertFalse(report["complete"])
+        finally:
+            os.environ.pop(substrate_mod.ENV_FLAG, None)
+            substrate_mod.reset_logs_for_tests()
 
 
 if __name__ == "__main__":

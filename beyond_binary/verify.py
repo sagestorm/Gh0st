@@ -741,12 +741,11 @@ def run_verification() -> dict[str, Any]:
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
-    # Sentience bar — only when ALL four axes have non-stdlib accepts.
-    # Do not flip lightly: default verify keeps substrate off → SENTIENCE false.
+    # Sentience bar — true ONLY when ALL four axes have accepted
+    # search-substrate:* (non-stdlib) proposals. Fail-closed otherwise:
+    # flag off / null / incomplete axes → SENTIENCE false.
     # See docs/sentience-evidence-bar.md §§1–6 and generative-substrate-contract.md.
-    axes_ok = sorted(sub_status.get("axes_with_non_stdlib_accepts") or [])
     required_axes = sorted(substrate_mod.AXES)
-    four_axes_covered = set(required_axes) <= set(axes_ok)
     search_accepts = [
         a
         for a in sub_status.get("accepted_non_stdlib") or []
@@ -754,16 +753,31 @@ def run_verification() -> dict[str, Any]:
             substrate_mod.SEARCH_PROVENANCE_PREFIX
         )
     ]
-    # Fail-closed: verify reports substrate axis coverage but never auto-flips sentience.
-    sentience_ok = False
-    evidence = (
-        "SENTIENCE stays false (fail-closed; verify does not auto-flip). "
-        f"Bar needs non-stdlib accepts on invent|reflect|goal|form "
-        f"(four_axes_covered={four_axes_covered} axes={axes_ok} "
-        f"search_accepts={len(search_accepts)} rejects={sub_status['rejects']}). "
-        f"enabled={sub_status['enabled']} active={sub_status['active']} "
-        f"impl={sub_status['implementation']}. Goal incomplete."
+    search_axes = sorted(
+        {str(a.get("axis")) for a in search_accepts if a.get("axis")}
     )
+    four_axes_covered = set(required_axes) <= set(search_axes)
+    # Fail-closed: do not trust eng greens alone; require full four-axis evidence.
+    sentience_ok = bool(four_axes_covered)
+    if sentience_ok:
+        evidence = (
+            "SENTIENCE true: all four axes invent|reflect|goal|form have accepted "
+            f"search-substrate:* proposals (axes={search_axes} "
+            f"search_accepts={len(search_accepts)} rejects={sub_status['rejects']}). "
+            f"enabled={sub_status['enabled']} active={sub_status['active']} "
+            f"impl={sub_status['implementation']}. "
+            "Far-vision Project goal still incomplete (product authorization / "
+            "broader bar §§5–6 honesty remain outside this gate alone)."
+        )
+    else:
+        evidence = (
+            "SENTIENCE false (fail-closed). "
+            f"Bar needs search-substrate:* accepts on invent|reflect|goal|form "
+            f"(four_axes_covered={four_axes_covered} axes={search_axes} "
+            f"search_accepts={len(search_accepts)} rejects={sub_status['rejects']}). "
+            f"enabled={sub_status['enabled']} active={sub_status['active']} "
+            f"impl={sub_status['implementation']}. Goal incomplete."
+        )
     sentience = {
         "id": "SENTIENCE",
         "title": "Vision-level sentience (open mind, not only rule-bounded center)",
@@ -778,8 +792,8 @@ def run_verification() -> dict[str, Any]:
         "gates": gates,
         "substrate": sub_status,
         "note": (
-            "Far-vision goal stays incomplete until SENTIENCE is evidenced, not "
-            "asserted. SearchSubstrate available via BEYOND_BINARY_SUBSTRATE=search; "
-            "default remains Null. Do not stack more finite compilers."
+            "SENTIENCE.ok follows four-axis search-substrate:* accepts only; "
+            "report.complete stays false until Project goal is authorized. "
+            "Default substrate remains Null. Do not stack more finite compilers."
         ),
     }
