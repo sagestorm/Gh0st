@@ -114,6 +114,7 @@ class LivingCenter:
         self._cycle_index = 0
         self.activity: list[dict[str, Any]] = []
         self.strategy = Strategy(grow_budget=max_new_pairs_per_cycle)
+        self.mind_store: Any = None  # optional path for learned/body persistence
         if history:
             self.sync_cycle_index(history)
             self.strategy = self.metacognize(history)
@@ -233,6 +234,22 @@ class LivingCenter:
     def cycle(self) -> CycleReport:
         # Refresh strategy from accumulated activity each cycle (metacognition).
         self.metacognize(self.activity)
+        # If lexicon is exhausted but generative work remains, keep a unit of growth.
+        if self.strategy.grow_budget == 0 and not self.strategy.prefer_prune:
+            from . import generate
+            from . import lexicon as lex
+
+            existing = set(self.engine.torus.nodes.keys())
+            if not lex.pending_expansions(existing, parent_names=existing):
+                if generate.pending_generative(
+                    self.engine, mind_store=self.mind_store, limit=1
+                ):
+                    self.strategy = Strategy(
+                        grow_budget=1,
+                        prefer_prune=False,
+                        prefer_migrate=self.strategy.prefer_migrate,
+                        reason="generative_available",
+                    )
         self._cycle_index += 1
         report = CycleReport(
             cycle=self._cycle_index,
@@ -274,6 +291,8 @@ class LivingCenter:
         """Persistent loop: metacognize → think cycles → optional embody (C6)."""
         from . import bodies
 
+        if mind_store is not None:
+            self.mind_store = mind_store
         reports = self.think(cycles)
         embodied = None
         if embody_every and cycles >= embody_every:
@@ -282,7 +301,7 @@ class LivingCenter:
                     self.engine,
                     name=f"auto-{self._cycle_index}",
                     domain=embody_domain,
-                    mind_store=mind_store,
+                    mind_store=self.mind_store,
                     cycle=self._cycle_index,
                 ).to_dict()
             except Exception as exc:  # noqa: BLE001 — record, don't abort autonomy
@@ -291,6 +310,52 @@ class LivingCenter:
             "cycles": [r.to_dict() for r in reports],
             "strategy": self.strategy.to_dict(),
             "embodied": embodied,
+        }
+
+    def live(
+        self,
+        *,
+        max_cycles: int = 20,
+        embody_every: int = 0,
+        embody_domain: str = "ontology",
+        mind_store: Any = None,
+        stop_when_idle: int = 3,
+    ) -> dict[str, Any]:
+        """Continuous autonomy until max_cycles or idle streak (no growth)."""
+        if mind_store is not None:
+            self.mind_store = mind_store
+        reports = []
+        idle = 0
+        embodied_list: list[dict[str, Any]] = []
+        for i in range(max_cycles):
+            report = self.cycle()
+            reports.append(report)
+            grown = next((a for a in report.acts if a.act == "grow"), None)
+            count = int(grown.detail.get("count", 0) or 0) if grown else 0
+            idle = idle + 1 if count == 0 else 0
+            if embody_every and (i + 1) % embody_every == 0:
+                from . import bodies
+
+                try:
+                    embodied_list.append(
+                        bodies.embody(
+                            self.engine,
+                            name=f"live-{self._cycle_index}",
+                            domain=embody_domain,
+                            mind_store=self.mind_store,
+                            cycle=self._cycle_index,
+                        ).to_dict()
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    embodied_list.append({"error": str(exc)})
+            if stop_when_idle and idle >= stop_when_idle:
+                break
+        return {
+            "cycles": [r.to_dict() for r in reports],
+            "strategy": self.strategy.to_dict(),
+            "embodied": embodied_list,
+            "stopped": "idle" if idle >= stop_when_idle else "max_cycles",
+            "cycle_count": len(reports),
         }
 
     # --- ordered acts ----------------------------------------------------
@@ -387,6 +452,9 @@ class LivingCenter:
         return {"name": orphan.name, "opposite": opp_node.name, "via": "created"}
 
     def _act_grow(self) -> ActRecord:
+        from . import generate
+        from . import lexicon as lex
+
         added: list[dict[str, str]] = []
         budget = self.strategy.grow_budget
         if self.strategy.prefer_prune:
@@ -413,7 +481,14 @@ class LivingCenter:
 
         existing = set(self.engine.torus.nodes.keys())
         parents = set(self.engine.torus.nodes.keys())
-        pending = lexicon.pending_expansions(existing, parent_names=parents)
+        pending = lex.pending_expansions(existing, parent_names=parents)
+        source = "lexicon"
+        if not pending:
+            pending = generate.pending_generative(
+                self.engine, mind_store=self.mind_store, limit=budget
+            )
+            source = "generative" if pending else "none"
+
         for entry in pending:
             if budget <= 0:
                 break
@@ -445,6 +520,9 @@ class LivingCenter:
             )
             budget -= 1
 
+        if added and self.mind_store is not None:
+            generate.remember_growth(added, self.mind_store)
+
         topic = added[0]["cause"] if added else None
         self.engine.center(CenterAction.ADD, topic)
         return ActRecord(
@@ -452,6 +530,7 @@ class LivingCenter:
             {
                 "added": added,
                 "count": len(added),
+                "source": source,
                 "strategy": self.strategy.to_dict(),
             },
         )

@@ -32,7 +32,9 @@ def _eng(path: Path | None) -> tuple[Engine, Path]:
 
 def _center(eng: Engine, target: Path) -> LivingCenter:
     history = store.load_activity(target)
-    return LivingCenter(eng, history=history)
+    center = LivingCenter(eng, history=history)
+    center.mind_store = target
+    return center
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -130,6 +132,22 @@ def cmd_autonomy(args: argparse.Namespace) -> int:
         embody_every=args.embody_every,
         embody_domain=args.embody_domain,
         mind_store=target,
+    )
+    store.save(eng.torus, target)
+    store.append_activity(result["cycles"], target)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_live(args: argparse.Namespace) -> int:
+    eng, target = _eng(args.store)
+    center = _center(eng, target)
+    result = center.live(
+        max_cycles=args.max_cycles,
+        embody_every=args.embody_every,
+        embody_domain=args.embody_domain,
+        mind_store=target,
+        stop_when_idle=args.stop_when_idle,
     )
     store.save(eng.torus, target)
     store.append_activity(result["cycles"], target)
@@ -327,6 +345,14 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--embody-domain", default="ontology", choices=["thermal", "ontology", "optical"])
 
     bind("autonomy", "think→metacognize→optional embody", cmd_autonomy, extras=autonomy_extras)
+
+    def live_extras(sp):
+        sp.add_argument("--max-cycles", type=int, default=20)
+        sp.add_argument("--embody-every", type=int, default=0)
+        sp.add_argument("--embody-domain", default="ontology", choices=["thermal", "ontology", "optical"])
+        sp.add_argument("--stop-when-idle", type=int, default=3)
+
+    bind("live", "continuous autonomy until idle or max-cycles", cmd_live, extras=live_extras)
 
     def embody_extras(sp):
         sp.add_argument("name")

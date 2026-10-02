@@ -121,12 +121,54 @@ class AutonomyTests(unittest.TestCase):
             eng = Engine(seed_minimal_hot_cold())
             store.save(eng.torus, mind_path)
             center = LivingCenter(eng, history=[])
+            center.mind_store = mind_path
             result = center.autonomy(
                 2, embody_every=2, embody_domain="optical", mind_store=mind_path
             )
             self.assertEqual(len(result["cycles"]), 2)
             self.assertIsNotNone(result["embodied"])
             self.assertNotIn("error", result["embodied"])
+            self.assertTrue(Path(result["embodied"]["form_path"]).exists())
+
+
+class GenerativeGrowthTests(unittest.TestCase):
+    def test_grows_beyond_fixed_lexicon(self):
+        eng = Engine(seed_minimal_hot_cold())
+        center = LivingCenter(eng)
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            store.save(eng.torus, mind_path)
+            center.mind_store = mind_path
+            center.max_nodes_soft_cap = 40
+            reports = center.think(10)
+            names = set(eng.torus.nodes)
+            self.assertTrue(any(n.startswith("more-") for n in names))
+            sources = [
+                a.detail.get("source")
+                for r in reports
+                for a in r.acts
+                if a.act == "grow"
+            ]
+            self.assertIn("generative", sources)
+            # Fixed thermal cascade alone cannot explain more-* nodes.
+            self.assertGreater(len(names), 10)
+
+
+class LiveAutonomyTests(unittest.TestCase):
+    def test_live_stops_on_idle_or_max(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            center = LivingCenter(eng, history=[])
+            center.mind_store = mind_path
+            result = center.live(
+                max_cycles=6,
+                stop_when_idle=3,
+                mind_store=mind_path,
+            )
+            self.assertGreaterEqual(result["cycle_count"], 3)
+            self.assertIn(result["stopped"], {"idle", "max_cycles"})
 
 
 if __name__ == "__main__":
