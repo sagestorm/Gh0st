@@ -12,7 +12,12 @@ from . import bodies
 from .center import LivingCenter
 from .engine import Engine, RuleError
 from .model import CenterAction, Torus
-from .seed import seed_domain, seed_hot_cold, seed_minimal_hot_cold
+from .seed import (
+    seed_domain,
+    seed_hot_cold,
+    seed_minimal_hot_cold,
+    seed_same_center,
+)
 from . import store
 
 
@@ -92,6 +97,24 @@ def cmd_seed_domain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_seed_same_center(args: argparse.Namespace) -> int:
+    target = store.store_path(args.store)
+    if target.exists() and not args.force:
+        print(f"already exists: {target} (use --force to overwrite)", file=sys.stderr)
+        return 1
+    domains = args.domains or ["thermal", "ontology", "optical"]
+    torus = seed_same_center(domains, minimal=not args.full)
+    store.save(torus, target)
+    store.clear_activity(target)
+    print(
+        f"seeded same-center domains {list(domains)} at {target} "
+        f"(minimal={not args.full})"
+    )
+    eng = Engine(torus)
+    print("\n".join(eng.structure_lines()))
+    return 0
+
+
 def cmd_think(args: argparse.Namespace) -> int:
     eng, target = _eng(args.store)
     if not eng.torus.nodes:
@@ -150,6 +173,8 @@ def cmd_live(args: argparse.Namespace) -> int:
         stop_when_idle=args.stop_when_idle,
         invent_every=args.invent_every,
         nurture_every=args.nurture_every,
+        nurture_max_depth=args.nurture_max_depth,
+        nurture_invent=not args.nurture_no_invent,
     )
     store.save(eng.torus, target)
     store.append_activity(result["cycles"], target)
@@ -180,7 +205,12 @@ def cmd_nurture(args: argparse.Namespace) -> int:
     from . import mind as mind_mod
 
     target = store.store_path(args.store)
-    result = mind_mod.nurture(target, steps=args.steps)
+    result = mind_mod.nurture(
+        target,
+        steps=args.steps,
+        max_depth=args.max_depth,
+        allow_invent=args.invent,
+    )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -375,6 +405,24 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--full", action="store_true")
 
     bind("seed-domain", "seed a domain", cmd_seed_domain, extras=domain_extras)
+
+    def same_center_extras(sp):
+        sp.add_argument(
+            "--domains",
+            nargs="+",
+            choices=["thermal", "ontology", "optical"],
+            default=None,
+            help="domains on one torus (default: thermal ontology optical)",
+        )
+        sp.add_argument("--force", action="store_true")
+        sp.add_argument("--full", action="store_true")
+
+    bind(
+        "seed-same-center",
+        "seed thermal+ontology+optical poles on one torus (C2)",
+        cmd_seed_same_center,
+        extras=same_center_extras,
+    )
     bind("think", "run N Living Center cycles", cmd_think, extras=lambda sp: sp.add_argument("--steps", type=int, default=5))
     bind("cycle", "run one Living Center cycle", cmd_cycle)
 
@@ -391,12 +439,28 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--embody-domain", default="ontology", choices=["thermal", "ontology", "optical"])
         sp.add_argument("--stop-when-idle", type=int, default=3)
         sp.add_argument("--invent-every", type=int, default=0, help="invent a new domain body every N cycles")
-        sp.add_argument("--nurture-every", type=int, default=0, help="think inside bodies every N cycles")
+        sp.add_argument("--nurture-every", type=int, default=0, help="nurture bodies every N cycles")
+        sp.add_argument("--nurture-max-depth", type=int, default=2, help="recursive nurture depth")
+        sp.add_argument(
+            "--nurture-no-invent",
+            action="store_true",
+            help="during nurture, do not let bodies invent further forms",
+        )
 
     bind("live", "continuous autonomy until idle or max-cycles", cmd_live, extras=live_extras)
     bind("invent-domain", "self-invent a domain body not in starter seeds", cmd_invent)
     bind("synthesize", "answer across mind + all bodies", cmd_synthesize, extras=lambda sp: sp.add_argument("topic"))
-    bind("nurture", "run think inside every body", cmd_nurture, extras=lambda sp: sp.add_argument("--steps", type=int, default=1))
+
+    def nurture_extras(sp):
+        sp.add_argument("--steps", type=int, default=1)
+        sp.add_argument("--max-depth", type=int, default=2, help="recurse into child body registries")
+        sp.add_argument(
+            "--invent",
+            action="store_true",
+            help="bodies may invent further forms while nurtured",
+        )
+
+    bind("nurture", "think (+optional invent) across body lineage", cmd_nurture, extras=nurture_extras)
     bind("verify-far-vision", "honest evidence audit for the far-vision goal", cmd_verify)
 
     def embody_extras(sp):

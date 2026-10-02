@@ -76,6 +76,7 @@ class BodyRecord:
     parent_instance: str
     created_from_cycle: int | None = None
     form_path: str | None = None
+    parent_body: str | None = None  # lineage: body that invented/embodied this one
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +86,7 @@ class BodyRecord:
             "parent_instance": self.parent_instance,
             "created_from_cycle": self.created_from_cycle,
             "form_path": self.form_path,
+            "parent_body": self.parent_body,
         }
 
     @classmethod
@@ -96,6 +98,7 @@ class BodyRecord:
             parent_instance=data.get("parent_instance", ""),
             created_from_cycle=data.get("created_from_cycle"),
             form_path=data.get("form_path"),
+            parent_body=data.get("parent_body"),
         )
 
 

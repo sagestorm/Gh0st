@@ -8,8 +8,8 @@ from typing import Any
 
 from .center import LivingCenter
 from .engine import Engine
-from .seed import seed_domain, seed_minimal_hot_cold
-from . import bodies, mind, store
+from .seed import seed_minimal_hot_cold, seed_same_center
+from . import bodies, lexicon, mind, store
 
 
 def run_verification() -> dict[str, Any]:
@@ -42,18 +42,40 @@ def run_verification() -> dict[str, Any]:
             f"nodes={len(eng.torus.nodes)} sources={sorted(set(s for s in sources if s))}",
         )
 
-        # C2 cross-domain
-        ont = root / "ont.json"
-        oeng = Engine(seed_domain("ontology", minimal=True))
-        store.save(oeng.torus, ont)
-        oc = LivingCenter(oeng)
-        oc.mind_store = ont
-        oc.think(4)
+        # C2 same-center cross-domain (thermal + ontology + ≥1 other)
+        multi_path = root / "same-center.json"
+        meng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        store.save(meng.torus, multi_path)
+        mc = LivingCenter(meng, history=[])
+        mc.mind_store = multi_path
+        mc.think(15)
+        names = set(meng.torus.nodes)
+        domains = lexicon.detect_domains(names)
+        thermal_grown = bool({"boiling", "freezing", "water", "warm", "steam"} & names)
+        ontology_grown = bool(
+            {"absence", "presence", "void", "form", "empty", "filled"} & names
+        )
+        optical_grown = bool(
+            {"bright", "dim", "day", "night", "glow", "shadow"} & names
+        )
+        c2_ok = (
+            domains >= {"thermal", "ontology", "optical"}
+            and "hot" in names
+            and "nothing" in names
+            and "light" in names
+            and thermal_grown
+            and ontology_grown
+            and optical_grown
+        )
         gate(
             "C2",
-            "Cross-domain transfer (ontology)",
-            "nothing" in oeng.torus.nodes and len(oeng.torus.nodes) > 2,
-            f"ontology nodes={sorted(oeng.torus.nodes)[:8]}",
+            "Same-center cross-domain (thermal+ontology+optical)",
+            c2_ok,
+            (
+                f"domains={sorted(domains)} nodes={len(names)} "
+                f"grown={{thermal:{thermal_grown},ontology:{ontology_grown},"
+                f"optical:{optical_grown}}}"
+            ),
         )
 
         # C3 metacognition
@@ -143,18 +165,95 @@ def run_verification() -> dict[str, Any]:
             f"hits={len(syn.get('hits', []))} misses={len(syn.get('misses', []))}",
         )
 
-        # C6 live
+        # C4d recursive nurture — bodies invent further forms; depth-bounded walk
+        nurtured = mind.nurture(
+            thermal, steps=1, max_depth=2, allow_invent=True
+        )
+        lineage = mind.count_body_lineage(thermal)
+        grandchild = lineage.get("has_grandchild") is True
+        duals = [
+            row.get("dual_ok")
+            for row in nurtured.get("nurtured", [])
+            if isinstance(row, dict)
+        ]
+        gate(
+            "C4d",
+            "Recursive body nurture (depth-bounded invent + lineage)",
+            grandchild and nurtured.get("count", 0) >= 1 and all(duals),
+            (
+                f"lineage={lineage} nurture_count={nurtured.get('count')} "
+                f"duals={duals}"
+            ),
+        )
+
+        # C6 live with invent + recursive nurture evidence (≥24 cycles; idle-stop alone is not enough)
         live_path = root / "live.json"
-        leng = Engine(seed_minimal_hot_cold())
+        leng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         store.save(leng.torus, live_path)
         lc = LivingCenter(leng, history=[])
         lc.mind_store = live_path
-        live = lc.live(max_cycles=5, stop_when_idle=3, mind_store=live_path)
+        live_max = 24
+        live = lc.live(
+            max_cycles=live_max,
+            stop_when_idle=0,
+            invent_every=3,
+            nurture_every=4,
+            nurture_max_depth=2,
+            nurture_invent=True,
+            mind_store=live_path,
+        )
+        live_lineage = mind.count_body_lineage(live_path)
+        invented_rows = [
+            row for row in live.get("inventions", []) if isinstance(row, dict)
+        ]
+        invented_any = any(row.get("invented") for row in invented_rows)
+        invent_sources = sorted(
+            {
+                (row.get("invention") or {}).get("source")
+                for row in invented_rows
+                if row.get("invented") and (row.get("invention") or {}).get("source")
+            }
+        )
+        nurtured_any = len(live.get("nurtured") or []) > 0
+        # Journal strategy shifts across the long run (not a frozen default).
+        reasons = []
+        for cyc in live.get("cycles") or []:
+            for act in cyc.get("acts") or []:
+                if act.get("act") == "metacognize":
+                    reasons.append(
+                        (act.get("detail") or {})
+                        .get("strategy", {})
+                        .get("reason")
+                    )
+        strategy_shifts = len({r for r in reasons if r}) >= 2
+        # End-state dual/orphan invariants on the live mind.
+        try:
+            leng.assert_no_orphans()
+            dual_live = leng.answer("hot")
+            live_inv_ok = bool(dual_live.cause_paths and dual_live.effect_paths)
+        except Exception as exc:  # noqa: BLE001
+            live_inv_ok = False
+            live_inv_err = str(exc)
+        else:
+            live_inv_err = ""
+
+        c6_ok = (
+            live_max >= 24
+            and live.get("cycle_count", 0) >= 24
+            and invented_any
+            and nurtured_any
+            and live_inv_ok
+        )
         gate(
             "C6",
-            "Persistent autonomy loop (live)",
-            live.get("cycle_count", 0) >= 3,
-            f"stopped={live.get('stopped')} cycles={live.get('cycle_count')}",
+            "Long-run autonomy (≥24 cycles with invent+nurture)",
+            c6_ok,
+            (
+                f"stopped={live.get('stopped')} cycles={live.get('cycle_count')} "
+                f"max={live_max} invented={invented_any} sources={invent_sources} "
+                f"nurtured={nurtured_any} strategy_shifts={strategy_shifts} "
+                f"lineage={live_lineage} invariants={live_inv_ok or live_inv_err}"
+            ),
         )
 
         # Invariants sample
@@ -173,7 +272,7 @@ def run_verification() -> dict[str, Any]:
             dual_err or "cause+effect paths present",
         )
 
-    required = ["C1", "C2", "C3", "C3j", "C4", "C4b", "C4c", "C6", "I2"]
+    required = ["C1", "C2", "C3", "C3j", "C4", "C4b", "C4c", "C4d", "C6", "I2"]
     by_id = {g["id"]: g for g in gates}
     all_required_ok = all(by_id[i]["ok"] for i in required if i in by_id)
 
@@ -184,7 +283,7 @@ def run_verification() -> dict[str, Any]:
         "ok": False,
         "evidence": (
             "System remains rule/lexicon/generative/compose-template bounded. "
-            "Gates prove a Living Center with journal + compositional invent — not sentience."
+            "Same-center multi-domain + recursive nurture evidenced — not sentience."
         ),
     }
     gates.append(sentience)

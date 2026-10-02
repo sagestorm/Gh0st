@@ -390,7 +390,13 @@ def mark_used(instance: str, mind_store) -> None:
     save_invent_registry(registry, mind_store)
 
 
-def invent_and_embody(eng: Engine, mind_store, *, cycle: int | None = None):
+def invent_and_embody(
+    eng: Engine,
+    mind_store,
+    *,
+    cycle: int | None = None,
+    parent_body: str | None = None,
+):
     """Invent a new domain body from composed/promoted/seed structure."""
     proposal = next_invention(eng, mind_store)
     if proposal is None:
@@ -422,6 +428,7 @@ def invent_and_embody(eng: Engine, mind_store, *, cycle: int | None = None):
         domain=proposal.instance,
         parent_instance=eng.torus.instance,
         created_from_cycle=cycle,
+        parent_body=parent_body,
     )
     form_path = bodies.write_form_module(record, mind_path)
     record.form_path = str(form_path)

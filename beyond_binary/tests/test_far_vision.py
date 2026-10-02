@@ -33,6 +33,32 @@ class CrossDomainTests(unittest.TestCase):
         self.assertIn("dark", names)
         self.assertTrue({"bright", "dim", "day", "night", "glow", "shadow"} & names)
 
+    def test_same_center_grows_across_three_domains(self):
+        """C2: thermal + ontology + optical on one Living Center torus."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import lexicon
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        self.assertEqual(
+            lexicon.detect_domains(eng.torus.nodes.keys()),
+            {"thermal", "ontology", "optical"},
+        )
+        center = LivingCenter(eng)
+        center.think(15)
+        names = set(eng.torus.nodes)
+        self.assertTrue({"hot", "cold", "nothing", "something", "light", "dark"} <= names)
+        self.assertTrue({"boiling", "freezing", "water", "warm", "steam"} & names)
+        self.assertTrue({"absence", "presence", "void", "form", "empty", "filled"} & names)
+        self.assertTrue({"bright", "dim", "day", "night", "glow", "shadow"} & names)
+        # Soft cap scales with domain count so growth is not starved.
+        self.assertGreaterEqual(center.effective_soft_cap(), 72)
+        dual = eng.answer("hot")
+        self.assertTrue(dual.cause_paths and dual.effect_paths)
+        dual2 = eng.answer("nothing")
+        self.assertTrue(dual2.cause_paths and dual2.effect_paths)
+        dual3 = eng.answer("light")
+        self.assertTrue(dual3.cause_paths and dual3.effect_paths)
+
 
 class MetacognitionTests(unittest.TestCase):
     def test_strategy_differs_after_contrasting_histories(self):
@@ -202,6 +228,36 @@ class EmbodyTests(unittest.TestCase):
             self.assertTrue(dual.effect_paths)
 
 
+class RecursiveNurtureTests(unittest.TestCase):
+    def test_nurture_invents_grandchild_bodies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            bodies.embody(
+                eng, name="child-a", domain="ontology", mind_store=mind_path
+            )
+            from beyond_binary import mind as mind_mod
+
+            result = mind_mod.nurture(
+                mind_path, steps=1, max_depth=2, allow_invent=True
+            )
+            self.assertGreaterEqual(result["count"], 1)
+            self.assertTrue(result["nurtured"][0].get("dual_ok"))
+            lineage = mind_mod.count_body_lineage(mind_path)
+            self.assertTrue(
+                lineage["has_grandchild"],
+                f"expected grandchild lineage, got {lineage}",
+            )
+            # Grandchild registry lives beside the child body store.
+            child = bodies.load_registry(mind_path).bodies[0]
+            grand = bodies.load_registry(child.store_path)
+            self.assertGreaterEqual(len(grand.bodies), 1)
+            self.assertEqual(grand.bodies[0].parent_body, child.name)
+            g_eng = Engine(store.load(grand.bodies[0].store_path))
+            g_eng.assert_no_orphans()
+
+
 class SourceryFixTests(unittest.TestCase):
     def test_cycle_index_continues_from_history(self):
         eng = Engine(seed_minimal_hot_cold())
@@ -285,6 +341,40 @@ class LiveAutonomyTests(unittest.TestCase):
             )
             self.assertGreaterEqual(result["cycle_count"], 3)
             self.assertIn(result["stopped"], {"idle", "max_cycles"})
+
+    def test_longrun_live_invent_nurture_twenty_four(self):
+        """C6: ≥24 cycles with invent+nurture; idle-stop alone is not enough."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import mind as mind_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_same_center(minimal=True))
+            store.save(eng.torus, mind_path)
+            center = LivingCenter(eng, history=[])
+            center.mind_store = mind_path
+            result = center.live(
+                max_cycles=24,
+                stop_when_idle=0,
+                invent_every=3,
+                nurture_every=4,
+                nurture_max_depth=2,
+                nurture_invent=True,
+                mind_store=mind_path,
+            )
+            self.assertGreaterEqual(result["cycle_count"], 24)
+            self.assertTrue(
+                any(
+                    isinstance(r, dict) and r.get("invented")
+                    for r in result.get("inventions", [])
+                )
+            )
+            self.assertGreater(len(result.get("nurtured") or []), 0)
+            eng.assert_no_orphans()
+            dual = eng.answer("hot")
+            self.assertTrue(dual.cause_paths and dual.effect_paths)
+            lineage = mind_mod.count_body_lineage(mind_path)
+            self.assertGreaterEqual(lineage["total"], 1)
 
 
 class VerifyFarVisionTests(unittest.TestCase):

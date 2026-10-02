@@ -132,6 +132,11 @@ class LivingCenter:
             self.sync_cycle_index(history)
             self.strategy = self.metacognize(history)
 
+    def effective_soft_cap(self) -> int:
+        """Scale soft cap by how many domain poles share this center (same-center C2)."""
+        domains = lexicon.detect_domains(self.engine.torus.nodes.keys())
+        return self.max_nodes_soft_cap * max(1, len(domains))
+
     def sync_cycle_index(self, history: list[dict[str, Any]] | None) -> None:
         """Continue numbering from persisted activity (Sourcery fix)."""
         if not history:
@@ -165,7 +170,7 @@ class LivingCenter:
         from_j = journal.strategy_from_journal(
             journal_rows,
             max_new_pairs=self.max_new_pairs_per_cycle,
-            soft_cap=self.max_nodes_soft_cap,
+            soft_cap=self.effective_soft_cap(),
             node_count=len(self.engine.torus.nodes),
         )
         if from_j is not None:
@@ -202,7 +207,9 @@ class LivingCenter:
         # If many flags or node churn with little grow payoff → prefer prune.
         # If grow kept adding but scores flat in last rows → prefer migrate.
         recent_growth = sum(1 for d in node_deltas[-5:] if d > 0)
-        if flag_total >= 2 or (prune_total == 0 and len(self.engine.torus.nodes) > self.max_nodes_soft_cap):
+        if flag_total >= 2 or (
+            prune_total == 0 and len(self.engine.torus.nodes) > self.effective_soft_cap()
+        ):
             self.strategy = Strategy(
                 grow_budget=0,
                 prefer_prune=True,
@@ -377,6 +384,8 @@ class LivingCenter:
         stop_when_idle: int = 3,
         invent_every: int = 0,
         nurture_every: int = 0,
+        nurture_max_depth: int = 2,
+        nurture_invent: bool = True,
     ) -> dict[str, Any]:
         """Continuous autonomy until max_cycles or idle streak (no growth)."""
         if mind_store is not None:
@@ -418,7 +427,14 @@ class LivingCenter:
             if nurture_every and (i + 1) % nurture_every == 0 and self.mind_store:
                 from . import mind as mind_mod
 
-                nurtured.append(mind_mod.nurture(self.mind_store, steps=1))
+                nurtured.append(
+                    mind_mod.nurture(
+                        self.mind_store,
+                        steps=1,
+                        max_depth=nurture_max_depth,
+                        allow_invent=nurture_invent,
+                    )
+                )
             if stop_when_idle and idle >= stop_when_idle:
                 break
         return {
@@ -427,7 +443,11 @@ class LivingCenter:
             "embodied": embodied_list,
             "inventions": inventions,
             "nurtured": nurtured,
-            "stopped": "idle" if idle >= stop_when_idle else "max_cycles",
+            "stopped": (
+                "idle"
+                if stop_when_idle and idle >= stop_when_idle
+                else "max_cycles"
+            ),
             "cycle_count": len(reports),
         }
 
@@ -532,13 +552,13 @@ class LivingCenter:
         budget = self.strategy.grow_budget
         if self.strategy.prefer_prune:
             budget = 0
-        if len(self.engine.torus.nodes) >= self.max_nodes_soft_cap:
+        if len(self.engine.torus.nodes) >= self.effective_soft_cap():
             return ActRecord(
                 "grow",
                 {
                     "added": [],
                     "skipped": "soft_cap",
-                    "cap": self.max_nodes_soft_cap,
+                    "cap": self.effective_soft_cap(),
                     "strategy": self.strategy.to_dict(),
                 },
             )
@@ -565,7 +585,7 @@ class LivingCenter:
         for entry in pending:
             if budget <= 0:
                 break
-            if len(self.engine.torus.nodes) + 2 > self.max_nodes_soft_cap:
+            if len(self.engine.torus.nodes) + 2 > self.effective_soft_cap():
                 break
             try:
                 child, opp = self.engine.add_under(
@@ -842,7 +862,7 @@ class LivingCenter:
     def _act_prune(self) -> ActRecord:
         """Light prune: drop unused auto not-* leaves when over soft cap and redundant."""
         pruned: list[str] = []
-        if len(self.engine.torus.nodes) <= self.max_nodes_soft_cap:
+        if len(self.engine.torus.nodes) <= self.effective_soft_cap():
             # Still prune clear alias leftovers (already handled in dedupe).
             self.engine.center(CenterAction.PRUNE)
             return ActRecord(
@@ -858,7 +878,7 @@ class LivingCenter:
             and not self.engine.children(n.name)
         ]
         for node in candidates:
-            if len(self.engine.torus.nodes) <= self.max_nodes_soft_cap:
+            if len(self.engine.torus.nodes) <= self.effective_soft_cap():
                 break
             if not node.opposite:
                 continue
