@@ -2157,6 +2157,75 @@ class ProductiveInventTests(unittest.TestCase):
             else:
                 self.assertTrue(report.get("meet_only_invent"))
 
+    def test_scoreboard_search_arm_uses_invent_on_think(self):
+        """#11: search arm invents during think under search, not only post-think."""
+        from beyond_binary import product_scoreboard as sb
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertFalse(report["null"].get("invent_on_think"))
+        self.assertEqual(int(report["null"].get("invent_count") or 0), 0)
+        self.assertTrue(
+            report.get("invent_on_think") or report["search"].get("invent_on_think"),
+            msg="search scoreboard must exercise invent-on-think",
+        )
+        self.assertIn("follow_on_invent", report)
+        self.assertIn("invent_count", report)
+        # Cumulative honesty: exceed / meet-only flags match post-invent snapshot.
+        if report["search"].get("invent_applied"):
+            self.assertGreaterEqual(int(report.get("invent_count") or 0), 1)
+            if report.get("product_exceed"):
+                self.assertFalse(report.get("meet_only_invent"))
+                self.assertTrue(report.get("exceeds"))
+            else:
+                self.assertTrue(report.get("meet_only_invent"))
+            # Follow-on only when a second invent applied (exceed remained).
+            if report.get("follow_on_invent"):
+                self.assertGreaterEqual(int(report.get("invent_count") or 0), 2)
+                self.assertGreaterEqual(
+                    len(report["search"].get("invent_instances") or []), 2
+                )
+
+    def test_scoreboard_follow_on_invent_only_when_exceed_remains(self):
+        """#11: follow-on invent_domain is gated on search_has_product_exceed_candidate."""
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import invent as invent_mod
+        import os
+        import tempfile
+        from pathlib import Path
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import store
+        from beyond_binary import substrate as substrate_mod
+
+        report = sb.run_scoreboard()
+        # Live tip after invent-on-think rehang empties the exceed pool —
+        # follow_on stays false (honest single-invent exceed).
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        if report["search"].get("invent_applied") and report.get("product_exceed"):
+            if not report.get("follow_on_invent"):
+                self.assertEqual(int(report.get("invent_count") or 0), 1)
+                self.assertFalse(report["search"].get("follow_on_invent"))
+        # Gate mirrors scoreboard mind_store think + invent-on-think / invent path.
+        with tempfile.TemporaryDirectory() as tmp:
+            mind = Path(tmp) / "mind.json"
+            eng = Engine(
+                seed_same_center(("thermal", "ontology", "optical"), minimal=True)
+            )
+            store.save(eng.torus, mind)
+            os.environ[substrate_mod.ENV_FLAG] = "search"
+            try:
+                substrate_mod.reset_logs_for_tests()
+                center = LivingCenter(eng)
+                center.mind_store = mind
+                center.think(6)
+                self.assertTrue(center.primary_inventions)
+                has_exceed = invent_mod.search_has_product_exceed_candidate(eng)
+            finally:
+                os.environ.pop(substrate_mod.ENV_FLAG, None)
+                substrate_mod.reset_logs_for_tests()
+            # After productive invent-on-think on full probe set, exceed pool empty.
+            self.assertFalse(has_exceed)
+
     def test_verify_default_fail_closed(self):
         import os
         from beyond_binary import substrate as substrate_mod

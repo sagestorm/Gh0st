@@ -108,6 +108,29 @@ def _snapshot(eng: Engine, probes: tuple[str, ...]) -> dict[str, Any]:
     }
 
 
+def _record_invent_row(
+    row: dict[str, Any] | None,
+    *,
+    invent_instances: list[str],
+) -> tuple[bool, str | None, str | None]:
+    """Extract applied invent metadata from invent_domain / invent_and_embody rows."""
+    if not isinstance(row, dict) or row.get("invented") is False:
+        return False, None, None
+    inv = row.get("invention") if isinstance(row.get("invention"), dict) else None
+    if inv is None:
+        return False, None, None
+    instance = inv.get("instance")
+    if instance:
+        invent_instances.append(str(instance))
+    if instance and inv.get("source") == "search":
+        provenance = "search-substrate:invent"
+    elif instance:
+        provenance = f"invent:{inv.get('source')}"
+    else:
+        provenance = None
+    return True, (str(instance) if instance else None), provenance
+
+
 def _run_arm(
     path: Path,
     *,
@@ -120,36 +143,77 @@ def _run_arm(
     store.save(eng.torus, path)
     center = LivingCenter(eng)
     center.mind_store = path
-    center.think(think_steps)
-    # #8: freeze dynamic probes after think (before invent) so Null/search share a set.
-    live_probes = probes if probes is not None else invent_mod.product_probes_for(eng)
     invent_applied = False
     invent_instance = None
     invent_provenance = None
+    invent_instances: list[str] = []
+    invent_count = 0
+    invent_on_think = False
+    follow_on_invent = False
     if use_search:
+        # #11: think under SearchSubstrate so primary invent-on-think fires.
         prev = os.environ.get(substrate_mod.ENV_FLAG)
         os.environ[substrate_mod.ENV_FLAG] = "search"
         try:
             substrate_mod.reset_logs_for_tests()
-            result = invent_mod.invent_and_embody(eng, path, cycle=1)
-            if result is not None:
+            center.think(think_steps)
+            # Shared probe set from Null (or caller); else freeze post-think.
+            live_probes = (
+                probes if probes is not None else invent_mod.product_probes_for(eng)
+            )
+            # primary_inventions non-empty ⇒ invent-on-think path exercised (#2/#11).
+            invent_on_think = bool(center.primary_inventions)
+            for row in center.primary_inventions:
+                applied, inst, prov = _record_invent_row(
+                    row if isinstance(row, dict) else None,
+                    invent_instances=invent_instances,
+                )
+                if not applied:
+                    continue
                 invent_applied = True
-                inv = result.get("invention") if isinstance(result, dict) else None
-                invent_instance = (inv or {}).get("instance") if isinstance(inv, dict) else None
-                if invent_instance and (inv or {}).get("source") == "search":
-                    invent_provenance = "search-substrate:invent"
-                elif invent_instance:
-                    invent_provenance = f"invent:{ (inv or {}).get('source') }"
+                invent_count += 1
+                if inst:
+                    invent_instance = inst
+                if prov:
+                    invent_provenance = prov
+            # Optional follow-on invent_domain only while a product exceed remains.
+            if invent_mod.search_has_product_exceed_candidate(eng):
+                from . import mind as mind_mod
+
+                follow = mind_mod.invent_domain(
+                    eng, path, cycle=max(1, invent_count) + 1
+                )
+                applied, inst, prov = _record_invent_row(
+                    follow if isinstance(follow, dict) else None,
+                    invent_instances=invent_instances,
+                )
+                if applied:
+                    invent_applied = True
+                    follow_on_invent = True
+                    invent_count += 1
+                    if inst:
+                        invent_instance = inst
+                    if prov:
+                        invent_provenance = prov
         finally:
             if prev is None:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
             else:
                 os.environ[substrate_mod.ENV_FLAG] = prev
             substrate_mod.reset_logs_for_tests()
+    else:
+        # Null: fail-closed think (no invent-on-think).
+        center.think(think_steps)
+        # #8: freeze dynamic probes after think so Null/search share a set.
+        live_probes = probes if probes is not None else invent_mod.product_probes_for(eng)
     snap = _snapshot(eng, live_probes)
     snap["invent_applied"] = invent_applied
     snap["invent_instance"] = invent_instance
     snap["invent_provenance"] = invent_provenance
+    snap["invent_count"] = invent_count
+    snap["invent_instances"] = list(invent_instances)
+    snap["invent_on_think"] = invent_on_think
+    snap["follow_on_invent"] = follow_on_invent
     snap["substrate"] = "search" if use_search else "null"
     snap["probe_topics"] = list(live_probes)
     return snap
@@ -330,7 +394,7 @@ def run_scoreboard(
         product_exceed, exceeds = evaluate_product_exceed(
             null_arm, search_arm, probes=shared_probes
         )
-        # #9: distinguish meet-only invent vs product exceed (detection, not veto).
+        # #9/#11: meet-only vs product exceed on cumulative post-invent snapshot.
         meet_only_invent = bool(search_arm.get("invent_applied")) and not product_exceed
         # Drop bulky name lists from default report (kept for debugging via flag).
         null_public = {k: v for k, v in null_arm.items() if k != "node_names"}
@@ -341,6 +405,9 @@ def run_scoreboard(
             "product_exceed": product_exceed,
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
+            "invent_on_think": bool(search_arm.get("invent_on_think")),
+            "follow_on_invent": bool(search_arm.get("follow_on_invent")),
+            "invent_count": int(search_arm.get("invent_count") or 0),
             "regressions": regressions,
             "probes": list(shared_probes),
             "domains": list(domains),
@@ -352,8 +419,9 @@ def run_scoreboard(
                 "unused_path_cost, readable_name_ratio; answer-path digests must "
                 "be zero; probe answerability must not regress; typed cross-domain "
                 "or undomain poles must not appear on typed probe answer paths; "
-                "probe path lengths must not exceed Null; scoreboard reports "
-                "product_exceed vs meet_only_invent when invent applies"
+                "probe path lengths must not exceed Null; search arm exercises "
+                "invent-on-think (optional follow-on invent_domain while exceed "
+                "remains) and reports cumulative product_exceed vs meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "
