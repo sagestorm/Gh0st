@@ -863,6 +863,51 @@ def mark_used(instance: str, mind_store) -> None:
     save_invent_registry(registry, mind_store)
 
 
+def mark_abandoned(instance: str, mind_store, *, why: str = "") -> None:
+    registry = load_invent_registry(mind_store)
+    key = normalize(instance)
+    for cand in registry.candidates:
+        if normalize(cand.instance) == key:
+            cand.abandoned = True
+            if why:
+                cand.why = f"{cand.why}|abandoned:{why}" if cand.why else f"abandoned:{why}"
+    save_invent_registry(registry, mind_store)
+
+
+def search_edit_score_acceptable(before, after) -> bool:
+    """Quality gate for applying search invent to the mind torus.
+
+    Accept when StructuralScore.better_than holds, OR when dual_coverage and
+    link_symmetry do not worsen and unused_path_cost does not rise. Node-count
+    growth alone must not veto a structurally sound readable invent.
+    """
+    if after.better_than(before):
+        return True
+    return (
+        after.dual_coverage >= before.dual_coverage
+        and after.link_symmetry >= before.link_symmetry
+        and after.unused_path_cost <= before.unused_path_cost
+    )
+
+
+def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, Any, str]:
+    """Trial-apply search edit_ast; return (ok, pre_score, post_score, reason)."""
+    from . import search_substrate as search_mod
+    from .center import LivingCenter
+
+    ast = list(edit.get("ast") or [])
+    if search_mod.rejects_digest_poles(ast):
+        return False, None, None, "digest_poles"
+    pre = LivingCenter(eng).score()
+    trial = search_mod._clone_engine(eng)
+    if not search_mod.apply_edit_ast(trial, ast):
+        return False, pre, None, "dual_i1_failed"
+    post = LivingCenter(trial).score()
+    if not search_edit_score_acceptable(pre, post):
+        return False, pre, post, "score_gate"
+    return True, pre, post, "ok"
+
+
 def invent_and_embody(
     eng: Engine,
     mind_store,
@@ -878,9 +923,36 @@ def invent_and_embody(
     from . import store
     from .center import LivingCenter
 
-    proposal = next_invention(
-        eng, mind_store, activity=activity, journal_rows=journal_rows
-    )
+    # Search invent may reject via score/digest gate; try a few candidates.
+    proposal = None
+    for _attempt in range(8):
+        proposal = next_invention(
+            eng, mind_store, activity=activity, journal_rows=journal_rows
+        )
+        if proposal is None:
+            return None
+        if not (
+            proposal.source == "search"
+            and proposal.edit
+            and proposal.edit.get("kind") == "edit_ast"
+        ):
+            break
+        ok, pre, post, reason = _trial_search_edit(eng, proposal.edit)
+        if ok:
+            break
+        detail = {
+            "act": "search_invent_reject",
+            "instance": proposal.instance,
+            "cause": proposal.cause,
+            "effect": proposal.effect,
+            "reason": reason,
+            "score_before": pre.to_dict() if pre is not None else None,
+            "score_after": post.to_dict() if post is not None else None,
+            "provenance": "search-substrate:invent",
+        }
+        store.append_activity([detail], mind_store)
+        mark_abandoned(proposal.instance, mind_store, why=reason)
+        proposal = None
     if proposal is None:
         return None
 
