@@ -1122,18 +1122,23 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
             mind_path = Path(tmp) / "mind.json"
             eng = Engine(seed_same_center(("thermal", "ontology"), minimal=False))
             store.save(eng.torus, mind_path)
-            # Force a wedge invent candidate ahead of the queue.
+            # Force a domain-matched wedge invent (#5 rejects undomain open/closed).
             reg = invent_mod.load_invent_registry(mind_path)
+            from beyond_binary import lexicon as lex
+
             causes = [
                 n
                 for n in eng.torus.nodes.values()
-                if n.hemisphere is Hemisphere.CAUSE and n.opposite and n.parent
+                if n.hemisphere is Hemisphere.CAUSE
+                and n.opposite
+                and n.parent
+                and (lex.pole_domain(n.parent) == "thermal")
             ]
-            self.assertTrue(causes)
+            self.assertTrue(causes, msg="expected a thermal-parented wedge site")
             child = causes[0]
             parent = eng.torus.nodes[child.parent]
-            cause, effect = "open", "closed"
-            instance = f"search-wedge-g11embody"
+            cause, effect = "sear", "numb"
+            instance = "search-wedge-g11embody"
             edit = {
                 "kind": "edit_ast",
                 "ast": [
