@@ -154,6 +154,21 @@ class GenerativeGrowthTests(unittest.TestCase):
             self.assertGreater(len(names), 10)
 
 
+class InventAndSynthesizeTests(unittest.TestCase):
+    def test_invent_and_synthesize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mind_path = Path(tmp) / "mind.json"
+            eng = Engine(seed_minimal_hot_cold())
+            store.save(eng.torus, mind_path)
+            from beyond_binary import mind as mind_mod
+
+            invented = mind_mod.invent_domain(eng, mind_path, cycle=1)
+            self.assertTrue(invented.get("invented"))
+            syn = mind_mod.synthesize(eng, "hot", mind_path)
+            self.assertTrue(syn.get("ok"))
+            self.assertTrue(any(h["source"] == "mind" for h in syn["hits"]))
+
+
 class LiveAutonomyTests(unittest.TestCase):
     def test_live_stops_on_idle_or_max(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,6 +184,17 @@ class LiveAutonomyTests(unittest.TestCase):
             )
             self.assertGreaterEqual(result["cycle_count"], 3)
             self.assertIn(result["stopped"], {"idle", "max_cycles"})
+
+
+class VerifyFarVisionTests(unittest.TestCase):
+    def test_verify_reports_incomplete_sentience(self):
+        from beyond_binary import verify
+
+        report = verify.run_verification()
+        self.assertFalse(report["complete"])
+        by_id = {g["id"]: g for g in report["gates"]}
+        self.assertFalse(by_id["SENTIENCE"]["ok"])
+        self.assertTrue(report["engineering_gates_ok"])
 
 
 if __name__ == "__main__":

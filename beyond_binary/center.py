@@ -320,6 +320,8 @@ class LivingCenter:
         embody_domain: str = "ontology",
         mind_store: Any = None,
         stop_when_idle: int = 3,
+        invent_every: int = 0,
+        nurture_every: int = 0,
     ) -> dict[str, Any]:
         """Continuous autonomy until max_cycles or idle streak (no growth)."""
         if mind_store is not None:
@@ -327,6 +329,8 @@ class LivingCenter:
         reports = []
         idle = 0
         embodied_list: list[dict[str, Any]] = []
+        inventions: list[dict[str, Any]] = []
+        nurtured: list[dict[str, Any]] = []
         for i in range(max_cycles):
             report = self.cycle()
             reports.append(report)
@@ -348,12 +352,26 @@ class LivingCenter:
                     )
                 except Exception as exc:  # noqa: BLE001
                     embodied_list.append({"error": str(exc)})
+            if invent_every and (i + 1) % invent_every == 0 and self.mind_store:
+                from . import mind as mind_mod
+
+                inventions.append(
+                    mind_mod.invent_domain(
+                        self.engine, self.mind_store, cycle=self._cycle_index
+                    )
+                )
+            if nurture_every and (i + 1) % nurture_every == 0 and self.mind_store:
+                from . import mind as mind_mod
+
+                nurtured.append(mind_mod.nurture(self.mind_store, steps=1))
             if stop_when_idle and idle >= stop_when_idle:
                 break
         return {
             "cycles": [r.to_dict() for r in reports],
             "strategy": self.strategy.to_dict(),
             "embodied": embodied_list,
+            "inventions": inventions,
+            "nurtured": nurtured,
             "stopped": "idle" if idle >= stop_when_idle else "max_cycles",
             "cycle_count": len(reports),
         }

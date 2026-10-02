@@ -148,11 +148,50 @@ def cmd_live(args: argparse.Namespace) -> int:
         embody_domain=args.embody_domain,
         mind_store=target,
         stop_when_idle=args.stop_when_idle,
+        invent_every=args.invent_every,
+        nurture_every=args.nurture_every,
     )
     store.save(eng.torus, target)
     store.append_activity(result["cycles"], target)
     print(json.dumps(result, indent=2))
     return 0
+
+
+def cmd_invent(args: argparse.Namespace) -> int:
+    from . import mind as mind_mod
+
+    eng, target = _eng(args.store)
+    center = _center(eng, target)
+    result = mind_mod.invent_domain(eng, target, cycle=center._cycle_index)
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("invented") else 1
+
+
+def cmd_synthesize(args: argparse.Namespace) -> int:
+    from . import mind as mind_mod
+
+    eng, target = _eng(args.store)
+    result = mind_mod.synthesize(eng, args.topic, target)
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_nurture(args: argparse.Namespace) -> int:
+    from . import mind as mind_mod
+
+    target = store.store_path(args.store)
+    result = mind_mod.nurture(target, steps=args.steps)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    from . import verify
+
+    result = verify.run_verification()
+    print(json.dumps(result, indent=2))
+    # Non-zero while far-vision sentience gate is false
+    return 0 if result.get("complete") else 2
 
 
 def cmd_embody(args: argparse.Namespace) -> int:
@@ -351,8 +390,14 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--embody-every", type=int, default=0)
         sp.add_argument("--embody-domain", default="ontology", choices=["thermal", "ontology", "optical"])
         sp.add_argument("--stop-when-idle", type=int, default=3)
+        sp.add_argument("--invent-every", type=int, default=0, help="invent a new domain body every N cycles")
+        sp.add_argument("--nurture-every", type=int, default=0, help="think inside bodies every N cycles")
 
     bind("live", "continuous autonomy until idle or max-cycles", cmd_live, extras=live_extras)
+    bind("invent-domain", "self-invent a domain body not in starter seeds", cmd_invent)
+    bind("synthesize", "answer across mind + all bodies", cmd_synthesize, extras=lambda sp: sp.add_argument("topic"))
+    bind("nurture", "run think inside every body", cmd_nurture, extras=lambda sp: sp.add_argument("--steps", type=int, default=1))
+    bind("verify-far-vision", "honest evidence audit for the far-vision goal", cmd_verify)
 
     def embody_extras(sp):
         sp.add_argument("name")
