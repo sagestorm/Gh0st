@@ -1308,6 +1308,57 @@ def invent_body_synthesize_domains(poles: Iterable[str]) -> frozenset[str]:
     return form_product_domains(poles)
 
 
+def invent_body_capprogram_product_poles(
+    mind_store: Path | str | None,
+    mind_eng: Engine | None = None,
+) -> tuple[str, ...]:
+    """#25: CapProgram dual_answer topics on invent-body product poles.
+
+    A topic counts only when CapProgram interpret emits a dual whose topic is a
+    readable invent-body synthesize product pole (digest/``ir*``/``more-*``
+    rejected). Torus synthesize alone, invent_* emit alone, or root-only
+    ``dual_answer`` (``hot``/``light`` outside body-syn product poles) do not
+    contribute.
+    """
+    if mind_store is None:
+        return ()
+    from . import capability as capability_mod
+    from . import store as store_mod
+
+    body_syn = {
+        normalize(p)
+        for p in invent_body_synthesize_product_poles(mind_store, mind_eng)
+        if not _is_digest_or_ir_pole(p)
+    }
+    if not body_syn:
+        return ()
+    registry = bodies.load_registry(mind_store)
+    if not registry.bodies:
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in registry.bodies:
+        try:
+            prog = capability_mod.load_program(rec.store_path)
+            body_eng = Engine(store_mod.load(rec.store_path))
+            interpreted = capability_mod.interpret(prog, body_eng)
+        except Exception:  # noqa: BLE001 — missing/corrupt body → no CapProgram evidence
+            continue
+        result = interpreted.get("result") if isinstance(interpreted, dict) else None
+        dual = (result or {}).get("dual") if isinstance(result, dict) else None
+        if not isinstance(dual, dict):
+            continue
+        topic = dual.get("topic")
+        if not topic or _is_digest_or_ir_pole(str(topic)):
+            continue
+        key = normalize(str(topic))
+        if key not in body_syn or key in seen:
+            continue
+        seen.add(key)
+        out.append(str(topic))
+    return tuple(out)
+
+
 def invent_touched_domains(
     ast: list[Any] | tuple[Any, ...] | None,
 ) -> frozenset[str]:

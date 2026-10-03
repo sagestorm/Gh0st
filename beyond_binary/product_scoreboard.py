@@ -364,6 +364,12 @@ def _run_arm(
     )
     snap["invent_body_synthesize_poles"] = body_syn_poles
     snap["invent_body_synthesize_count"] = len(body_syn_poles)
+    # #25: CapProgram dual_answer topics on invent-body product poles.
+    cap_poles = list(
+        invent_mod.invent_body_capprogram_product_poles(path, eng)
+    )
+    snap["invent_body_capprogram_product_poles"] = cap_poles
+    snap["invent_body_capprogram_product_count"] = len(cap_poles)
     snap["invent_on_think"] = invent_on_think
     snap["follow_on_invent"] = follow_on_invent
     snap["substrate"] = "search" if use_search else "null"
@@ -527,6 +533,10 @@ def evaluate_product_exceed(
     #23 adds cross-domain invent-body synthesize when mind answers ≥2 seeded
     domains and invent bodies synthesize ≥2 domains Null lacks (thermal-only
     body coverage insufficient for that class).
+    #24 adds complete same-center invent-body domain synthesize vs Null.
+    #25 adds CapProgram dual_answer topics on invent-touched / body-synthesize
+    readable product poles Null lacks (torus synthesize / invent_* emit /
+    root-only ``dual_answer`` insufficient for that class).
     """
     exceeds: list[str] = []
     n_score = _score_from_dict(null_arm["score"])
@@ -604,6 +614,16 @@ def evaluate_product_exceed(
         exceeds.append("invent_body_synthesize_domain_complete")
         for domain in sorted(mind_domains):
             exceeds.append(f"invent_body_synthesize_domain_complete:{domain}")
+    # #25: CapProgram product specialty — dual_answer on invent-body product poles.
+    # Torus synthesize / invent_* emit / root-only dual_answer insufficient.
+    cap_poles = invent_mod.invent_introduced_form_product_poles(
+        search_arm.get("invent_body_capprogram_product_poles") or [],
+        null_arm.get("invent_body_capprogram_product_poles") or [],
+    )
+    if cap_poles:
+        exceeds.append("invent_body_capprogram_product_coverage")
+        for pole in cap_poles:
+            exceeds.append(f"invent_body_capprogram_product_coverage:{pole}")
     return bool(exceeds), exceeds
 
 
@@ -709,6 +729,21 @@ def run_scoreboard(
             domain_complete_n
             - (1 if "invent_body_synthesize_domain_complete" in exceeds else 0),
         )
+        cap_product_poles = invent_mod.invent_introduced_form_product_poles(
+            search_arm.get("invent_body_capprogram_product_poles") or [],
+            null_arm.get("invent_body_capprogram_product_poles") or [],
+        )
+        cap_product_n = sum(
+            1
+            for e in exceeds
+            if e == "invent_body_capprogram_product_coverage"
+            or str(e).startswith("invent_body_capprogram_product_coverage:")
+        )
+        cap_product_coverage_count = max(
+            0,
+            cap_product_n
+            - (1 if "invent_body_capprogram_product_coverage" in exceeds else 0),
+        )
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -738,6 +773,11 @@ def run_scoreboard(
             "invent_body_synthesize_domains": body_syn_domains,
             "invent_body_synthesize_cross_domain_count": cross_domain_count,
             "invent_body_synthesize_domain_complete_count": domain_complete_count,
+            "invent_body_capprogram_product_poles": list(cap_product_poles),
+            "invent_body_capprogram_product_coverage_count": cap_product_coverage_count,
+            "null_invent_body_capprogram_product_count": len(
+                null_arm.get("invent_body_capprogram_product_poles") or []
+            ),
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
             "invent_on_think": bool(search_arm.get("invent_on_think")),
