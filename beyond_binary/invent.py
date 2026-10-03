@@ -1359,6 +1359,55 @@ def invent_body_capprogram_product_poles(
     return tuple(out)
 
 
+def invent_body_capprogram_product_pair_poles(
+    mind_store: Path | str | None,
+    mind_eng: Engine | None = None,
+) -> tuple[str, ...]:
+    """#26: CapProgram dual_pair topics on invent-touched product effect poles.
+
+    A topic counts only when CapProgram interpret emits ``dual_pair`` whose topic
+    is a readable invent-body synthesize product pole. Primary ``dual`` cause-leaf
+    (#25) alone does not contribute; torus synthesize / invent_* emit insufficient.
+    """
+    if mind_store is None:
+        return ()
+    from . import capability as capability_mod
+    from . import store as store_mod
+
+    body_syn = {
+        normalize(p)
+        for p in invent_body_synthesize_product_poles(mind_store, mind_eng)
+        if not _is_digest_or_ir_pole(p)
+    }
+    if not body_syn:
+        return ()
+    registry = bodies.load_registry(mind_store)
+    if not registry.bodies:
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in registry.bodies:
+        try:
+            prog = capability_mod.load_program(rec.store_path)
+            body_eng = Engine(store_mod.load(rec.store_path))
+            interpreted = capability_mod.interpret(prog, body_eng)
+        except Exception:  # noqa: BLE001 — missing/corrupt body → no CapProgram evidence
+            continue
+        result = interpreted.get("result") if isinstance(interpreted, dict) else None
+        dual_pair = (result or {}).get("dual_pair") if isinstance(result, dict) else None
+        if not isinstance(dual_pair, dict):
+            continue
+        topic = dual_pair.get("topic")
+        if not topic or _is_digest_or_ir_pole(str(topic)):
+            continue
+        key = normalize(str(topic))
+        if key not in body_syn or key in seen:
+            continue
+        seen.add(key)
+        out.append(str(topic))
+    return tuple(out)
+
+
 def invent_touched_domains(
     ast: list[Any] | tuple[Any, ...] | None,
 ) -> frozenset[str]:

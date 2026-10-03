@@ -370,6 +370,12 @@ def _run_arm(
     )
     snap["invent_body_capprogram_product_poles"] = cap_poles
     snap["invent_body_capprogram_product_count"] = len(cap_poles)
+    # #26: CapProgram dual_pair on invent-touched product effect poles.
+    cap_pair_poles = list(
+        invent_mod.invent_body_capprogram_product_pair_poles(path, eng)
+    )
+    snap["invent_body_capprogram_product_pair_poles"] = cap_pair_poles
+    snap["invent_body_capprogram_product_pair_count"] = len(cap_pair_poles)
     snap["invent_on_think"] = invent_on_think
     snap["follow_on_invent"] = follow_on_invent
     snap["substrate"] = "search" if use_search else "null"
@@ -624,6 +630,15 @@ def evaluate_product_exceed(
         exceeds.append("invent_body_capprogram_product_coverage")
         for pole in cap_poles:
             exceeds.append(f"invent_body_capprogram_product_coverage:{pole}")
+    # #26: CapProgram pair / effect-side specialty — cause-leaf (#25) insufficient.
+    cap_pair_poles = invent_mod.invent_introduced_form_product_poles(
+        search_arm.get("invent_body_capprogram_product_pair_poles") or [],
+        null_arm.get("invent_body_capprogram_product_pair_poles") or [],
+    )
+    if cap_pair_poles:
+        exceeds.append("invent_body_capprogram_product_pair_coverage")
+        for pole in cap_pair_poles:
+            exceeds.append(f"invent_body_capprogram_product_pair_coverage:{pole}")
     return bool(exceeds), exceeds
 
 
@@ -744,6 +759,25 @@ def run_scoreboard(
             cap_product_n
             - (1 if "invent_body_capprogram_product_coverage" in exceeds else 0),
         )
+        cap_pair_poles = invent_mod.invent_introduced_form_product_poles(
+            search_arm.get("invent_body_capprogram_product_pair_poles") or [],
+            null_arm.get("invent_body_capprogram_product_pair_poles") or [],
+        )
+        cap_pair_n = sum(
+            1
+            for e in exceeds
+            if e == "invent_body_capprogram_product_pair_coverage"
+            or str(e).startswith("invent_body_capprogram_product_pair_coverage:")
+        )
+        cap_pair_coverage_count = max(
+            0,
+            cap_pair_n
+            - (
+                1
+                if "invent_body_capprogram_product_pair_coverage" in exceeds
+                else 0
+            ),
+        )
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -777,6 +811,13 @@ def run_scoreboard(
             "invent_body_capprogram_product_coverage_count": cap_product_coverage_count,
             "null_invent_body_capprogram_product_count": len(
                 null_arm.get("invent_body_capprogram_product_poles") or []
+            ),
+            "invent_body_capprogram_product_pair_poles": list(cap_pair_poles),
+            "invent_body_capprogram_product_pair_coverage_count": (
+                cap_pair_coverage_count
+            ),
+            "null_invent_body_capprogram_product_pair_count": len(
+                null_arm.get("invent_body_capprogram_product_pair_poles") or []
             ),
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,

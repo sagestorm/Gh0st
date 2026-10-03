@@ -2348,6 +2348,16 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertEqual(
                 int(report.get("null_invent_body_capprogram_product_count") or 0), 0
             )
+            # #26: CapProgram invent-touched product pair / effect-side specialty.
+            self.assertIn("invent_body_capprogram_product_pair_coverage", exceeds)
+            self.assertGreaterEqual(
+                int(report.get("invent_body_capprogram_product_pair_coverage_count") or 0),
+                1,
+            )
+            self.assertEqual(
+                int(report.get("null_invent_body_capprogram_product_pair_count") or 0),
+                0,
+            )
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2382,6 +2392,7 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_body_synthesize_cross_domain_count=", ev)
             self.assertIn("invent_body_synthesize_domain_complete_count=", ev)
             self.assertIn("invent_body_capprogram_product_coverage_count=", ev)
+            self.assertIn("invent_body_capprogram_product_pair_coverage_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2426,6 +2437,18 @@ class ProductiveInventTests(unittest.TestCase):
             )
             self.assertEqual(
                 int(board.get("null_invent_body_capprogram_product_count") or 0), 0
+            )
+            self.assertIn(
+                "invent_body_capprogram_product_pair_coverage",
+                board.get("exceeds") or [],
+            )
+            self.assertGreaterEqual(
+                int(board.get("invent_body_capprogram_product_pair_coverage_count") or 0),
+                1,
+            )
+            self.assertEqual(
+                int(board.get("null_invent_body_capprogram_product_pair_count") or 0),
+                0,
             )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
@@ -2861,12 +2884,24 @@ class ProductiveInventTests(unittest.TestCase):
         dual_ops = [o for o in prog.ops if o.get("op") == "dual_answer"]
         self.assertTrue(dual_ops)
         # #25: CapProgram dual_answer prefers invent-touched leaf poles over root hot.
-        self.assertEqual(dual_ops[0].get("topic"), "ice")
+        primary = next(
+            o for o in dual_ops if str(o.get("into") or "dual") == "dual"
+        )
+        self.assertEqual(primary.get("topic"), "ice")
+        # #26: effect-side pair specialty on invent-touched readable effect pole.
+        pair_op = next(
+            (o for o in dual_ops if str(o.get("into") or "dual") == "dual_pair"),
+            None,
+        )
+        self.assertIsNotNone(pair_op)
+        self.assertEqual(pair_op.get("topic"), "thaw")
         out = capability_mod.interpret(prog, eng)
         result = out.get("result") or {}
         self.assertIn("invent_rehang_shift", result)
         dual = result.get("dual") or {}
         self.assertEqual(dual.get("topic"), "ice")
+        dual_pair = result.get("dual_pair") or {}
+        self.assertEqual(dual_pair.get("topic"), "thaw")
 
     def test_product_exceed_credits_invent_body_synthesize_coverage(self):
         """#22: invent-body synthesize hits Null lacks earn a product_exceed class."""
@@ -3421,6 +3456,62 @@ class ProductiveInventTests(unittest.TestCase):
         )
         self.assertNotIn("invent_body_capprogram_product_coverage", exceeds4)
 
+    def test_product_exceed_credits_invent_body_capprogram_product_pair_coverage(self):
+        """#26: CapProgram dual_pair effect poles earn a class; cause-leaf (#25) alone do not."""
+        from beyond_binary import product_scoreboard as sb
+
+        base_score = {
+            "dual_coverage": 1.0,
+            "link_symmetry": 1.0,
+            "unused_path_cost": 0.0,
+            "node_count": 10,
+        }
+        mind_poles = ["water", "ice", "thaw", "glow", "shadow"]
+        null_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_synthesize_poles": [],
+            "invent_body_capprogram_product_poles": [],
+            "invent_body_capprogram_product_pair_poles": [],
+            "invent_emit_count": 0,
+        }
+        cause_only = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_synthesize_poles": ["ice", "thaw", "glow", "shadow"],
+            "invent_body_capprogram_product_poles": ["ice", "glow"],
+            "invent_body_capprogram_product_pair_poles": [],
+            "invent_emit_count": 2,
+        }
+        _ok, exceeds = sb.evaluate_product_exceed(
+            null_arm, cause_only, probes=("water",)
+        )
+        self.assertIn("invent_body_capprogram_product_coverage", exceeds)
+        self.assertNotIn("invent_body_capprogram_product_pair_coverage", exceeds)
+        with_pair = {
+            **cause_only,
+            "invent_body_capprogram_product_pair_poles": ["thaw", "shadow"],
+        }
+        exceeded, exceeds2 = sb.evaluate_product_exceed(
+            null_arm, with_pair, probes=("water",)
+        )
+        self.assertTrue(exceeded)
+        self.assertIn("invent_body_capprogram_product_pair_coverage", exceeds2)
+        self.assertIn("invent_body_capprogram_product_pair_coverage:thaw", exceeds2)
+        self.assertIn("invent_body_capprogram_product_pair_coverage:shadow", exceeds2)
+        digest_pair = {
+            **cause_only,
+            "invent_body_capprogram_product_pair_poles": ["irdeadbeeflc"],
+        }
+        _ok3, exceeds3 = sb.evaluate_product_exceed(
+            null_arm, digest_pair, probes=("water",)
+        )
+        self.assertNotIn("invent_body_capprogram_product_pair_coverage", exceeds3)
+
     def test_scoreboard_invent_body_capprogram_product_coverage(self):
         """#25: scoreboard CapProgram dual_answer hits invent-touched product poles."""
         from beyond_binary import product_scoreboard as sb
@@ -3462,6 +3553,20 @@ class ProductiveInventTests(unittest.TestCase):
                 or str(pole).startswith("more-")
                 or str(pole).startswith("more_")
             )
+        # #26: CapProgram pair / effect-side specialty vs Null.
+        self.assertIn("invent_body_capprogram_product_pair_coverage", exceeds)
+        self.assertGreaterEqual(
+            int(report.get("invent_body_capprogram_product_pair_coverage_count") or 0),
+            1,
+        )
+        self.assertEqual(
+            int(report.get("null_invent_body_capprogram_product_pair_count") or 0), 0
+        )
+        cap_pair_poles = report.get("invent_body_capprogram_product_pair_poles") or []
+        self.assertTrue(cap_pair_poles, msg=report.get("exceeds"))
+        for pole in cap_pair_poles:
+            self.assertIn(pole, body_syn, msg=(pole, sorted(body_syn)))
+            self.assertNotIn(pole, cap_poles, msg="pair pole must be effect-side (#26)")
         # Soft-caps unchanged — CapProgram retarget is the #25 vehicle.
         self.assertEqual(MAX_FORM_PRODUCTIVE_FOLLOW_ONS, 1)
         self.assertEqual(MAX_DOMAIN_MISS_FOLLOW_ONS, 1)
