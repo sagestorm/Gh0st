@@ -211,10 +211,39 @@ def _run_arm(
                 os.environ[substrate_mod.ENV_FLAG] = prev
             substrate_mod.reset_logs_for_tests()
     else:
-        # Null: fail-closed think (no invent-on-think).
-        center.think(think_steps)
-        # #8: freeze dynamic probes after think so Null/search share a set.
-        live_probes = probes if probes is not None else invent_mod.product_probes_for(eng)
+        # #17: force Null substrate for this arm even when caller ambient is search
+        # (verify nests scoreboard under BEYOND_BINARY_SUBSTRATE=search).
+        prev = os.environ.get(substrate_mod.ENV_FLAG)
+        os.environ.pop(substrate_mod.ENV_FLAG, None)
+        try:
+            substrate_mod.reset_logs_for_tests()
+            # Null: fail-closed think (no invent-on-think / primary invent drain).
+            center.think(think_steps)
+            # Honesty: Null arm must not invent even if ambient was search.
+            invent_on_think = bool(center.primary_inventions)
+            for row in center.primary_inventions:
+                applied, inst, prov = _record_invent_row(
+                    row if isinstance(row, dict) else None,
+                    invent_instances=invent_instances,
+                )
+                if not applied:
+                    continue
+                invent_applied = True
+                invent_count += 1
+                if inst:
+                    invent_instance = inst
+                if prov:
+                    invent_provenance = prov
+            # #8: freeze dynamic probes after think so Null/search share a set.
+            live_probes = (
+                probes if probes is not None else invent_mod.product_probes_for(eng)
+            )
+        finally:
+            if prev is None:
+                os.environ.pop(substrate_mod.ENV_FLAG, None)
+            else:
+                os.environ[substrate_mod.ENV_FLAG] = prev
+            substrate_mod.reset_logs_for_tests()
     snap = _snapshot(eng, live_probes)
     snap["invent_applied"] = invent_applied
     snap["invent_instance"] = invent_instance
