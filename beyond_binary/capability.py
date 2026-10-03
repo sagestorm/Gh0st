@@ -171,9 +171,10 @@ def _op_measure_depth(ctx: dict[str, Any], args: dict[str, Any]) -> None:
 def _op_dual_answer(ctx: dict[str, Any], args: dict[str, Any]) -> None:
     eng: Engine = ctx["eng"]
     topic = args.get("topic") or ctx["cause"]
+    into = str(args.get("into") or "dual")
     if topic and eng.exists(topic):
         dual = eng.answer(topic)
-        ctx["dual"] = {
+        ctx[into] = {
             "topic": dual.topic,
             "cause_paths": dual.cause_paths,
             "effect_paths": dual.effect_paths,
@@ -237,6 +238,10 @@ def _op_emit(ctx: dict[str, Any], args: dict[str, Any]) -> None:
             out[f] = scalars[f]
         elif f == "dual" and "dual" in ctx:
             out["dual"] = ctx["dual"]
+        elif f == "dual_pair" and "dual_pair" in ctx:
+            out["dual_pair"] = ctx["dual_pair"]
+        elif str(f).startswith("dual_multi_") and f in ctx:
+            out[f] = ctx[f]
         elif f in (ctx.get("measures") or {}):
             out[f] = ctx["measures"][f]
 
@@ -592,6 +597,118 @@ def initial_program_for(eng: Engine, body_name: str) -> CapProgram:
     return CapProgram(body_name=body_name, ops=ops, revisions=0)
 
 
+def _dual_answerable_product_topic(eng: Engine, topic: str) -> bool:
+    """True when topic exists, is dual-answerable, and is not digest/ir*/more-*."""
+    from . import invent as invent_mod
+
+    if not topic or invent_mod._is_digest_or_ir_pole(topic):
+        return False
+    if not eng.exists(topic):
+        return False
+    try:
+        dual = eng.answer(topic)
+    except RuleError:
+        return False
+    return bool(dual.cause_paths and dual.effect_paths)
+
+
+def _invent_touched_dual_answer_topic(
+    eng: Engine,
+    edit: dict[str, Any] | None,
+) -> str | None:
+    """#25: invent-touched readable product pole for CapProgram dual_answer.
+
+    Prefers invent leaf cause/effect poles over cause_parent/effect_parent domain
+    roots (``hot``/``light``), and rejects digest/``ir*``/``more-*``. Only returns
+    topics that exist and are dual-answerable on the body.
+    """
+    from . import invent as invent_mod
+
+    if not edit or edit.get("kind") != "edit_ast":
+        return None
+    ast = [s for s in list(edit.get("ast") or []) if isinstance(s, dict)]
+    ordered: list[str] = []
+    seen: set[str] = set()
+    # Leaf invent duals before parent roots — same key order as invent_touched.
+    for step in ast:
+        for ck, ek in (("cause", "effect"), ("cause_parent", "effect_parent")):
+            for raw in (step.get(ck), step.get(ek)):
+                if not raw:
+                    continue
+                name = str(raw)
+                if invent_mod._is_digest_or_ir_pole(name):
+                    continue
+                key = normalize(name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ordered.append(name)
+    for name in ordered:
+        if _dual_answerable_product_topic(eng, name):
+            return name
+    return None
+
+
+def _topic_for_invent_product_dual(eng: Engine, cause: str, effect: str) -> str | None:
+    """Prefer cause leaf; fall back to effect when answerable on the body."""
+    if _dual_answerable_product_topic(eng, cause):
+        return cause
+    if _dual_answerable_product_topic(eng, effect):
+        return effect
+    return None
+
+
+def _invent_touched_effect_dual_answer_topic(
+    eng: Engine,
+    edit: dict[str, Any] | None,
+) -> str | None:
+    """#26: invent-touched readable product **effect** pole for pair CapProgram.
+
+    Uses leaf ``cause``/``effect`` pairs only (not domain parent roots) so
+    ``dual_pair`` answers ``thaw``/``manifest``/``shadow`` rather than ``cold``.
+    """
+    from . import invent as invent_mod
+
+    if not edit or edit.get("kind") != "edit_ast":
+        return None
+    ast = [s for s in list(edit.get("ast") or []) if isinstance(s, dict)]
+    for step in ast:
+        c_raw, e_raw = step.get("cause"), step.get("effect")
+        if not c_raw or not e_raw:
+            continue
+        c, e = str(c_raw), str(e_raw)
+        if invent_mod._is_digest_or_ir_pole(c) or invent_mod._is_digest_or_ir_pole(e):
+            continue
+        if _dual_answerable_product_topic(eng, e):
+            return e
+    return None
+
+
+def _set_dual_answer_topic(
+    program: CapProgram,
+    topic: str,
+    *,
+    into: str = "dual",
+) -> bool:
+    """Set CapProgram dual_answer.topic for emit slot ``into``; True if changed."""
+    for op in program.ops:
+        if op.get("op") != "dual_answer":
+            continue
+        slot = str(op.get("into") or "dual")
+        if slot != into:
+            continue
+        prev = op.get("topic")
+        if prev == topic:
+            return False
+        op["topic"] = topic
+        return True
+    step: dict[str, Any] = {"op": "dual_answer", "topic": topic}
+    if into != "dual":
+        step["into"] = into
+    _insert_before_emit(program, step)
+    return True
+
+
 def couple_program_to_invent_edit(
     program: CapProgram,
     eng: Engine,
@@ -602,6 +719,9 @@ def couple_program_to_invent_edit(
     Different invent ops (wedge / add_dual chain / rehang) install distinct
     prim_* steps so embodied specialty results differ by invent content — not
     only by seed_custom pole labels.
+
+    #25: also retarget ``dual_answer.topic`` onto invent-touched readable product
+    poles present on the body (not only ``_roots`` cause like ``hot``/``light``).
     """
     if not edit or edit.get("kind") != "edit_ast":
         return program
@@ -665,17 +785,39 @@ def couple_program_to_invent_edit(
         }
 
     op_names = {o.get("op") for o in program.ops}
-    if name in program.primitives or name in op_names:
-        return program
-    if not validate_primitive_against_duals(eng, name, spec):
-        return program
-    program.primitives[name] = dict(spec)
-    program.primitive_revisions += 1
-    _insert_before_emit(program, {"op": name})
-    into = str(spec.get("into", ""))
-    if into:
-        _ensure_emit_field(program, into)
-    program.revisions += 1
+    if name not in program.primitives and name not in op_names:
+        if validate_primitive_against_duals(eng, name, spec):
+            program.primitives[name] = dict(spec)
+            program.primitive_revisions += 1
+            _insert_before_emit(program, {"op": name})
+            into = str(spec.get("into", ""))
+            if into:
+                _ensure_emit_field(program, into)
+            program.revisions += 1
+
+    # #25: CapProgram product specialty — dual_answer invent-touched poles.
+    topic = _invent_touched_dual_answer_topic(eng, edit)
+    if topic and _set_dual_answer_topic(program, topic):
+        program.revisions += 1
+    # #26: effect-side pair specialty — second dual_answer emit slot dual_pair.
+    effect_topic = _invent_touched_effect_dual_answer_topic(eng, edit)
+    if effect_topic and effect_topic != topic:
+        if _set_dual_answer_topic(program, effect_topic, into="dual_pair"):
+            program.revisions += 1
+            _ensure_emit_field(program, "dual_pair")
+    # #27: sibling / multi-dual — one CapProgram topic per extra invent-touched dual.
+    from . import invent as invent_mod
+
+    leaf_duals = invent_mod.invent_touched_leaf_product_duals(ast)
+    if len(leaf_duals) >= 2:
+        for idx, (c, e) in enumerate(leaf_duals[1:], start=1):
+            sibling_topic = _topic_for_invent_product_dual(eng, c, e)
+            if not sibling_topic:
+                continue
+            into = f"dual_multi_{idx}"
+            if _set_dual_answer_topic(program, sibling_topic, into=into):
+                program.revisions += 1
+                _ensure_emit_field(program, into)
     return program
 
 
@@ -694,7 +836,15 @@ def _depth_safe(eng: Engine, name: str) -> int:
 
 def _insert_before_emit(program: CapProgram, step: dict[str, Any]) -> None:
     op_name = str(step.get("op", ""))
-    if op_name and any(str(o.get("op", "")) == op_name for o in program.ops):
+    if op_name == "dual_answer":
+        into = str(step.get("into") or "dual")
+        if any(
+            str(o.get("op", "")) == "dual_answer"
+            and str(o.get("into") or "dual") == into
+            for o in program.ops
+        ):
+            return
+    elif op_name and any(str(o.get("op", "")) == op_name for o in program.ops):
         return
     emit_i = next(
         (i for i, o in enumerate(program.ops) if o.get("op") == "emit"),

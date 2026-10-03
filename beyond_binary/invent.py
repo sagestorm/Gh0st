@@ -49,6 +49,30 @@ def invent_touched_product_duals(
     return tuple(out)
 
 
+def invent_touched_leaf_product_duals(
+    ast: list[dict[str, Any]] | None,
+) -> tuple[tuple[str, str], ...]:
+    """#27: leaf ``cause``/``effect`` pairs only (no ``cause_parent`` domain roots)."""
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for step in ast or []:
+        if not isinstance(step, dict):
+            continue
+        c_raw, e_raw = step.get("cause"), step.get("effect")
+        if not c_raw or not e_raw:
+            continue
+        c, e = str(c_raw), str(e_raw)
+        if _is_digest_or_ir_pole(c) or _is_digest_or_ir_pole(e):
+            continue
+        key = (normalize(c), normalize(e))
+        rev = (key[1], key[0])
+        if key in seen or rev in seen:
+            continue
+        seen.add(key)
+        out.append((c, e))
+    return tuple(out)
+
+
 def bridge_invent_touched_product_poles(
     eng: Engine,
     ast: list[dict[str, Any]] | None,
@@ -1306,6 +1330,222 @@ def form_product_domains(poles: Iterable[str]) -> frozenset[str]:
 def invent_body_synthesize_domains(poles: Iterable[str]) -> frozenset[str]:
     """#23: lexicon domains invent bodies synthesize (readable poles only)."""
     return form_product_domains(poles)
+
+
+def invent_body_capprogram_product_poles(
+    mind_store: Path | str | None,
+    mind_eng: Engine | None = None,
+) -> tuple[str, ...]:
+    """#25: CapProgram dual_answer topics on invent-body product poles.
+
+    A topic counts only when CapProgram interpret emits a dual whose topic is a
+    readable invent-body synthesize product pole (digest/``ir*``/``more-*``
+    rejected). Torus synthesize alone, invent_* emit alone, or root-only
+    ``dual_answer`` (``hot``/``light`` outside body-syn product poles) do not
+    contribute.
+    """
+    if mind_store is None:
+        return ()
+    from . import capability as capability_mod
+    from . import store as store_mod
+
+    body_syn = {
+        normalize(p)
+        for p in invent_body_synthesize_product_poles(mind_store, mind_eng)
+        if not _is_digest_or_ir_pole(p)
+    }
+    if not body_syn:
+        return ()
+    registry = bodies.load_registry(mind_store)
+    if not registry.bodies:
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in registry.bodies:
+        try:
+            prog = capability_mod.load_program(rec.store_path)
+            body_eng = Engine(store_mod.load(rec.store_path))
+            interpreted = capability_mod.interpret(prog, body_eng)
+        except Exception:  # noqa: BLE001 — missing/corrupt body → no CapProgram evidence
+            continue
+        result = interpreted.get("result") if isinstance(interpreted, dict) else None
+        dual = (result or {}).get("dual") if isinstance(result, dict) else None
+        if not isinstance(dual, dict):
+            continue
+        topic = dual.get("topic")
+        if not topic or _is_digest_or_ir_pole(str(topic)):
+            continue
+        key = normalize(str(topic))
+        if key not in body_syn or key in seen:
+            continue
+        seen.add(key)
+        out.append(str(topic))
+    return tuple(out)
+
+
+def invent_body_capprogram_product_pair_poles(
+    mind_store: Path | str | None,
+    mind_eng: Engine | None = None,
+) -> tuple[str, ...]:
+    """#26: CapProgram dual_pair topics on invent-touched product effect poles.
+
+    A topic counts only when CapProgram interpret emits ``dual_pair`` whose topic
+    is a readable invent-body synthesize product pole. Primary ``dual`` cause-leaf
+    (#25) alone does not contribute; torus synthesize / invent_* emit insufficient.
+    """
+    if mind_store is None:
+        return ()
+    from . import capability as capability_mod
+    from . import store as store_mod
+
+    body_syn = {
+        normalize(p)
+        for p in invent_body_synthesize_product_poles(mind_store, mind_eng)
+        if not _is_digest_or_ir_pole(p)
+    }
+    if not body_syn:
+        return ()
+    registry = bodies.load_registry(mind_store)
+    if not registry.bodies:
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in registry.bodies:
+        try:
+            prog = capability_mod.load_program(rec.store_path)
+            body_eng = Engine(store_mod.load(rec.store_path))
+            interpreted = capability_mod.interpret(prog, body_eng)
+        except Exception:  # noqa: BLE001 — missing/corrupt body → no CapProgram evidence
+            continue
+        result = interpreted.get("result") if isinstance(interpreted, dict) else None
+        dual_pair = (result or {}).get("dual_pair") if isinstance(result, dict) else None
+        if not isinstance(dual_pair, dict):
+            continue
+        topic = dual_pair.get("topic")
+        if not topic or _is_digest_or_ir_pole(str(topic)):
+            continue
+        key = normalize(str(topic))
+        if key not in body_syn or key in seen:
+            continue
+        seen.add(key)
+        out.append(str(topic))
+    return tuple(out)
+
+
+def _program_invent_ops_fingerprint(prog: Any) -> str | None:
+    from . import capability as capability_mod
+
+    if not isinstance(prog, capability_mod.CapProgram):
+        return None
+    for spec in prog.primitives.values():
+        if not isinstance(spec, dict):
+            continue
+        if spec.get("origin") == "search-invent":
+            return str(spec.get("invent_ops") or "") or None
+    return None
+
+
+def _program_is_multi_dual_invent(prog: Any) -> bool:
+    fp = _program_invent_ops_fingerprint(prog)
+    return bool(fp and fp.count("add_dual") >= 2)
+
+
+def _invent_leaf_duals_for_body_record(
+    mind_store: Path | str | None,
+    record: Any,
+) -> tuple[tuple[str, str], ...]:
+    """Leaf invent-touched duals for an embodied search invent (registry edit_ast)."""
+    if mind_store is None:
+        return ()
+    domain = normalize(getattr(record, "domain", "") or "")
+    name = normalize(getattr(record, "name", "") or "")
+    body_key = domain or name.removeprefix("inv-")
+    registry = load_invent_registry(mind_store)
+    for cand in registry.candidates:
+        if not cand.used or not cand.edit or cand.edit.get("kind") != "edit_ast":
+            continue
+        inst = normalize(cand.instance)
+        if inst != body_key and not body_key.endswith(inst):
+            continue
+        return invent_touched_leaf_product_duals(list(cand.edit.get("ast") or []))
+    return ()
+
+
+def _caprogram_interpret_dual_topics(
+    interpreted: dict[str, Any] | None,
+) -> frozenset[str]:
+    """Normalized CapProgram dual emit topics (dual / dual_pair / dual_multi_*)."""
+    result = (interpreted or {}).get("result") if isinstance(interpreted, dict) else None
+    if not isinstance(result, dict):
+        return frozenset()
+    topics: set[str] = set()
+    for key, val in result.items():
+        if not isinstance(val, dict):
+            continue
+        if key not in ("dual", "dual_pair") and not str(key).startswith("dual_multi_"):
+            continue
+        topic = val.get("topic")
+        if not topic or _is_digest_or_ir_pole(str(topic)):
+            continue
+        topics.add(normalize(str(topic)))
+    return frozenset(topics)
+
+
+def invent_body_capprogram_product_multi_dual_poles(
+    mind_store: Path | str | None,
+    mind_eng: Engine | None = None,
+) -> tuple[str, ...]:
+    """#27: CapProgram covers every invent-touched dual on multi-dual invent bodies.
+
+    Credits sibling-pair poles (e.g. ``humid``/``arid`` on chain) when each
+    invent-touched readable product dual on that body has ≥1 CapProgram dual
+    topic. Primary-pair-only (#26) is insufficient for this class.
+    """
+    if mind_store is None:
+        return ()
+    from . import capability as capability_mod
+    from . import store as store_mod
+
+    body_syn = {
+        normalize(p)
+        for p in invent_body_synthesize_product_poles(mind_store, mind_eng)
+        if not _is_digest_or_ir_pole(p)
+    }
+    if not body_syn:
+        return ()
+    registry = bodies.load_registry(mind_store)
+    if not registry.bodies:
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in registry.bodies:
+        try:
+            prog = capability_mod.load_program(rec.store_path)
+            body_eng = Engine(store_mod.load(rec.store_path))
+            interpreted = capability_mod.interpret(prog, body_eng)
+        except Exception:  # noqa: BLE001 — missing/corrupt body → no CapProgram evidence
+            continue
+        if not _program_is_multi_dual_invent(prog):
+            continue
+        duals = _invent_leaf_duals_for_body_record(mind_store, rec)
+        if len(duals) < 2:
+            continue
+        cap_topics = _caprogram_interpret_dual_topics(interpreted)
+        if not cap_topics:
+            continue
+        for c, e in duals:
+            poles = {normalize(c), normalize(e)}
+            if not (poles & cap_topics):
+                break
+        else:
+            for c, e in duals[1:]:
+                for raw in (c, e):
+                    key = normalize(raw)
+                    if key not in body_syn or key not in cap_topics or key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(str(raw))
+    return tuple(out)
 
 
 def invent_touched_domains(
