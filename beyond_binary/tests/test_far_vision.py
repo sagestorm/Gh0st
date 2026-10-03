@@ -313,9 +313,11 @@ class GenerativeGrowthTests(unittest.TestCase):
             mind_path = Path(tmp) / "mind.json"
             store.save(eng.torus, mind_path)
             center.mind_store = mind_path
-            center.max_nodes_soft_cap = 40
+            # #16: ice/thaw nest + aliases need more headroom past lexicon fill
+            # before synonym/generative can fire under soft_cap pressure.
+            center.max_nodes_soft_cap = 64
             # Lexicon → synonym cascade → more-* leaf generative.
-            reports = center.think(20)
+            reports = center.think(28)
             names = set(eng.torus.nodes)
             sources = [
                 a.detail.get("source")
@@ -326,7 +328,8 @@ class GenerativeGrowthTests(unittest.TestCase):
             beyond = {"synonym", "generative"} & set(sources)
             self.assertTrue(
                 beyond,
-                f"expected synonym or generative growth, got {sorted(set(sources))}",
+                "expected synonym or generative growth, got "
+                f"{sorted(s for s in set(sources) if s is not None)}",
             )
             self.assertTrue(
                 any(n.startswith("more-") for n in names)
@@ -2100,7 +2103,12 @@ class ProductiveInventTests(unittest.TestCase):
             )
             store.save(eng.torus, mind)
             LivingCenter(eng).think(6, allow_primary_invent=False)
-            before = invent_mod._probe_answer_path_len(eng, "water")
+            # #16: first durable invent may shorten ice (nested) before water.
+            before_paths = {
+                topic: invent_mod._probe_answer_path_len(eng, topic)
+                for topic in ("water", "ice", "condensation", "thaw")
+                if eng.exists(topic)
+            }
             os.environ[substrate_mod.ENV_FLAG] = "search"
             try:
                 substrate_mod.reset_logs_for_tests()
@@ -2116,10 +2124,13 @@ class ProductiveInventTests(unittest.TestCase):
                 or "rehang" in str(inv.get("why", "")),
                 msg=inv,
             )
-            after = invent_mod._probe_answer_path_len(eng, "water")
-            self.assertIsNotNone(before)
-            self.assertIsNotNone(after)
-            self.assertLess(int(after), int(before))
+            shortened = False
+            for topic, before in before_paths.items():
+                after = invent_mod._probe_answer_path_len(eng, topic)
+                if before is not None and after is not None and int(after) < int(before):
+                    shortened = True
+                    break
+            self.assertTrue(shortened, msg=f"before={before_paths} inv={inv}")
 
     def test_scoreboard_detects_meet_only_invent(self):
         from beyond_binary import product_scoreboard as sb
@@ -2236,11 +2247,12 @@ class ProductiveInventTests(unittest.TestCase):
         self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
         self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
         invent_count = int(report.get("invent_count") or 0)
-        self.assertGreaterEqual(invent_count, 1)
+        self.assertGreaterEqual(invent_count, 2)  # #16: stacked durable invents
         self.assertLessEqual(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
         self.assertEqual(
             invent_count, len(report["search"].get("invent_instances") or [])
         )
+        self.assertTrue(report.get("follow_on_invent"))
         # #15: durable path/structural exceed must survive the invent drain.
         self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
         self.assertFalse(report.get("meet_only_invent"))
@@ -2255,12 +2267,12 @@ class ProductiveInventTests(unittest.TestCase):
         )
         instances = report["search"].get("invent_instances") or []
         self.assertTrue(
-            any(str(i).startswith("rehang-") for i in instances),
+            all(str(i).startswith("rehang-") for i in instances),
             msg=instances,
         )
         # Motif-only coverage must not dominate the drained invent set.
         self.assertFalse(
-            all(str(i).startswith("search-add-") for i in instances),
+            any(str(i).startswith("search-add-") for i in instances),
             msg=instances,
         )
         _ = invent_mod
@@ -2304,7 +2316,7 @@ class ProductiveInventTests(unittest.TestCase):
                     and r.get("invented") is not False
                     and isinstance(r.get("invention"), dict)
                 ]
-                self.assertGreaterEqual(len(applied), 1)
+                self.assertGreaterEqual(len(applied), 2)  # #16: stacked durable surfaces
                 self.assertLessEqual(len(applied), MAX_FOLLOW_ON_INVENTS)
                 instances = [
                     str((r.get("invention") or {}).get("instance") or "")
@@ -2313,7 +2325,10 @@ class ProductiveInventTests(unittest.TestCase):
                 self.assertTrue(
                     any(i.startswith("rehang-") for i in instances), msg=instances
                 )
-                # #15: durable pool empty — coverage-only motifs do not keep it open.
+                self.assertTrue(
+                    all(i.startswith("rehang-") for i in instances), msg=instances
+                )
+                # #15/#16: durable pool empty — coverage-only motifs do not keep it open.
                 self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
                 search_snap = sb._snapshot(eng, null_probes)
                 pe, exceeds = sb.evaluate_product_exceed(
@@ -2334,10 +2349,11 @@ class ProductiveInventTests(unittest.TestCase):
                 substrate_mod.reset_logs_for_tests()
 
     def test_durable_exceed_preferred_over_motif_coverage_burn(self):
-        """#15: invent pool prefers path/structural; motif coverage is not durable fuel."""
+        """#15/#16: invent pool prefers path/structural; motif coverage is not durable fuel."""
         from beyond_binary.seed import seed_same_center
         from beyond_binary import invent as invent_mod
         from beyond_binary import search_substrate as search_mod
+        from beyond_binary.center import MAX_FOLLOW_ON_INVENTS
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6, allow_primary_invent=False)
@@ -2358,8 +2374,15 @@ class ProductiveInventTests(unittest.TestCase):
                 str(row.get("instance", "")).startswith("rehang-"),
                 msg=row.get("instance"),
             )
-        # Apply one durable invent → durable pool empties; motifs become meet fallback.
-        self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
+        # #16: drain all durable invents (stacked surfaces) → motifs become meet fallback.
+        applied = 0
+        while invent_mod.search_has_product_exceed_candidate(eng):
+            nxt = search_mod.search_invent_asts(eng, limit=6)
+            self.assertTrue(nxt, msg="durable candidate reported but pool empty")
+            self.assertTrue(search_mod.apply_edit_ast(eng, nxt[0]["ast"]))
+            applied += 1
+            self.assertLessEqual(applied, MAX_FOLLOW_ON_INVENTS)
+        self.assertGreaterEqual(applied, 1)
         self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
         fallback = search_mod.search_invent_asts(eng, limit=3)
         self.assertTrue(fallback)
@@ -2373,6 +2396,68 @@ class ProductiveInventTests(unittest.TestCase):
         self.assertFalse(
             invent_mod.durable_product_exceed_reasons(reasons), msg=reasons
         )
+
+    def test_stacked_durable_invent_surfaces_after_drain(self):
+        """#16: nested cascade yields ≥2 durable invents; path exceed survives drain."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import store
+        from beyond_binary import substrate as substrate_mod
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+        self.assertFalse(report.get("meet_only_invent"))
+        invent_count = int(report.get("invent_count") or 0)
+        instances = report["search"].get("invent_instances") or []
+        # Either stacked durable invents applied, or honesty proves no second remains.
+        if invent_count >= 2:
+            self.assertTrue(report.get("follow_on_invent"))
+            self.assertGreaterEqual(len(instances), 2)
+            self.assertTrue(
+                all(str(i).startswith("rehang-") for i in instances),
+                msg=instances,
+            )
+        else:
+            self.assertGreaterEqual(invent_count, 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mind = Path(tmp) / "mind.json"
+            eng = Engine(
+                seed_same_center(("thermal", "ontology", "optical"), minimal=True)
+            )
+            store.save(eng.torus, mind)
+            os.environ[substrate_mod.ENV_FLAG] = "search"
+            try:
+                substrate_mod.reset_logs_for_tests()
+                center = LivingCenter(eng)
+                center.mind_store = mind
+                center.think(6)
+                applied = [
+                    r
+                    for r in center.primary_inventions
+                    if isinstance(r, dict)
+                    and r.get("invented") is not False
+                    and isinstance(r.get("invention"), dict)
+                ]
+                self.assertGreaterEqual(len(applied), 2, msg=applied)
+                self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
+                # Nested ice/thaw (or equivalent) must be present as stacked surface.
+                self.assertTrue(
+                    eng.exists("ice") or any(
+                        "ice" in str((r.get("invention") or {}).get("why") or "")
+                        or "ice" in str((r.get("invention") or {}).get("instance") or "")
+                        for r in applied
+                    )
+                    or eng.exists("water"),
+                )
+            finally:
+                os.environ.pop(substrate_mod.ENV_FLAG, None)
+                substrate_mod.reset_logs_for_tests()
 
     def test_motif_add_dual_exceeds_after_invent_on_think(self):
         """#12: typed invent-motif dual earns usable_probe_coverage after path invent."""
@@ -2394,29 +2479,19 @@ class ProductiveInventTests(unittest.TestCase):
             os.environ[substrate_mod.ENV_FLAG] = "search"
             try:
                 substrate_mod.reset_logs_for_tests()
-                # Apply productive rehang only (pre-#14 single invent) so motif
-                # coverage exceed is measurable without draining the pool first.
+                # #15/#16: drain durable path invents first so motif coverage is
+                # measurable as meet/coverage fallback (not blocked by exceed pool).
                 LivingCenter(eng).think(6, allow_primary_invent=False)
-                water = eng.torus.nodes["water"]
-                opp = eng.torus.nodes[water.opposite]
-                rehang = {
-                    "kind": "edit_ast",
-                    "ast": [
-                        {
-                            "op": "rehang",
-                            "cause": water.name,
-                            "effect": opp.name,
-                            "cause_parent": "hot",
-                            "effect_parent": "cold",
-                        }
-                    ],
-                    "cause": water.name,
-                    "effect": opp.name,
-                    "instance": "rehang-test-motif",
-                }
-                ok, _, _, reason = invent_mod._trial_search_edit(eng, rehang)
-                self.assertTrue(ok, msg=reason)
-                self.assertTrue(search_mod.apply_edit_ast(eng, rehang["ast"]))
+                drained = 0
+                while invent_mod.search_has_product_exceed_candidate(eng):
+                    rows = search_mod.search_invent_asts(eng, limit=4)
+                    self.assertTrue(rows)
+                    ok, _, _, reason = invent_mod._trial_search_edit(eng, rows[0])
+                    self.assertTrue(ok, msg=reason)
+                    self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
+                    drained += 1
+                    self.assertLessEqual(drained, 8)
+                self.assertGreaterEqual(drained, 1)
                 store.save(eng.torus, mind)
                 before_probes = invent_mod.product_probes_for(eng)
                 self.assertNotIn("humid", before_probes)

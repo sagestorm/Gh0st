@@ -23,6 +23,8 @@ class LexEntry:
 THERMAL_CASCADE: tuple[LexEntry, ...] = (
     LexEntry("boiling", "freezing", "hot", "cold"),
     LexEntry("water", "condensation", "boiling", "cold"),
+    # #16: nested durable rehang surface — second path-shorten after water→root.
+    LexEntry("ice", "thaw", "water", "condensation"),
     LexEntry("steam", "frost", "hot", "cold"),
     LexEntry("warm", "cool", "hot", "cold"),
 )
@@ -54,6 +56,8 @@ THERMAL_ALIASES: tuple[tuple[str, ...], ...] = (
     ("warm", "warming", "heated"),
     ("cool", "cooling", "chilly"),
     ("water", "h2o"),
+    ("ice", "icy"),
+    ("thaw", "thawing", "melt"),
     ("frost", "icing"),
 )
 
