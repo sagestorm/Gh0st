@@ -1867,8 +1867,11 @@ def invent_and_embody(
         ):
             # #24: do not burn an invent slot on topology/seed while a
             # domain-opening invent remains for under-covered same-center domains.
+            # Compose/promote stay allowed — compositional invent must not be
+            # starved by the domain-miss completeness vehicle.
             if (
-                form_productive_invent_landed(mind_store)
+                proposal.source in {"topology", "seed"}
+                and form_productive_invent_landed(mind_store)
                 and search_has_domain_miss_invent_candidate(
                     eng, mind_store=mind_store
                 )
