@@ -458,7 +458,13 @@ def evaluate_product_exceed(
     *,
     probes: tuple[str, ...],
 ) -> tuple[bool, list[str]]:
-    """#9: detect strict product exceeds of search vs Null (meet-only ≠ exceed)."""
+    """#9/#21: detect strict product exceeds of search vs Null (meet-only ≠ exceed).
+
+    Shared ``probes`` stay Null-frozen for cascade path/coverage fairness.
+    #21 adds invent-introduced readable answerable form-product poles search has
+    / Null lacks as ``invent_form_product_coverage`` — distinct from form_exceed
+    (emit + poles) and from cascade path-floor keys.
+    """
     exceeds: list[str] = []
     n_score = _score_from_dict(null_arm["score"])
     s_score = _score_from_dict(search_arm["score"])
@@ -488,6 +494,16 @@ def evaluate_product_exceed(
     )
     if s_ans_count > n_ans_count:
         exceeds.append("usable_probe_coverage")
+    # #21: form-derived product class — invent-introduced mind poles Null lacks.
+    # CapProgram emit / form_exceed alone is insufficient (poles required).
+    introduced = invent_mod.invent_introduced_form_product_poles(
+        search_arm.get("invent_form_product_poles") or [],
+        null_arm.get("invent_form_product_poles") or [],
+    )
+    if introduced:
+        exceeds.append("invent_form_product_coverage")
+        for pole in introduced:
+            exceeds.append(f"invent_form_product_coverage:{pole}")
     return bool(exceeds), exceeds
 
 
@@ -545,6 +561,16 @@ def run_scoreboard(
             search_arm.get("invent_form_product_poles") or [],
             null_arm.get("invent_form_product_poles") or [],
         )
+        form_product_coverage = sum(
+            1
+            for e in exceeds
+            if e == "invent_form_product_coverage"
+            or str(e).startswith("invent_form_product_coverage:")
+        )
+        # Class key + per-pole keys; count poles (exclude the bare class token).
+        form_product_coverage_count = max(0, form_product_coverage - (
+            1 if "invent_form_product_coverage" in exceeds else 0
+        ))
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -562,6 +588,7 @@ def run_scoreboard(
             ),
             "invent_introduced_form_product_count": len(introduced_poles),
             "invent_introduced_form_product_poles": list(introduced_poles),
+            "invent_form_product_coverage_count": form_product_coverage_count,
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
             "invent_on_think": bool(search_arm.get("invent_on_think")),
@@ -581,12 +608,15 @@ def run_scoreboard(
                 "probe path lengths must not exceed Null; search arm exercises "
                 "invent-on-think (primary-path iterative invent while durable "
                 "product-exceed or distinct form-productive invent candidates remain, "
-                "bounded; path-shorten / structural preferred over path-neutral "
-                "motif coverage; post-floor invent earns mind form product "
+                "bounded; cascade path-shorten / structural preferred over "
+                "path-neutral motif coverage and invent-motif path-shortens; "
+                "post-floor invent earns mind form product "
                 "(invent-introduced answerable poles Null lacks) plus invent_* "
                 "emit adjuncts — not dual_attach clone floods or orphan CapProgram "
-                "emit greenwash; scoreboard adjunct safety-net) and reports "
-                "cumulative product_exceed / mind form_exceed vs meet_only_invent"
+                "emit greenwash; Living Center product_exceed credits invent-form "
+                "product coverage vs Null alongside cascade path floor; scoreboard "
+                "adjunct safety-net) and reports cumulative product_exceed / mind "
+                "form_exceed vs meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "

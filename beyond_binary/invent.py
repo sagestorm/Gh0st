@@ -1075,18 +1075,49 @@ def product_exceed_reasons(
     return reasons
 
 
+def _is_cascade_probe_topic(topic: str) -> bool:
+    """True when topic is a lexicon cascade cause/effect (shared Null path floor)."""
+    from . import lexicon as lex
+
+    key = normalize(topic)
+    if not key:
+        return False
+    for entry in lex.all_cascades():
+        if key in {normalize(entry.cause), normalize(entry.effect)}:
+            return True
+    return False
+
+
 def durable_product_exceed_reasons(reasons: list[str] | tuple[str, ...]) -> list[str]:
-    """#15: path-shorten / structural exceeds that survive Null comparison.
+    """#15/#21: path-shorten / structural exceeds that survive Null comparison.
 
     Strips usable_probe_coverage — motif adds that only expand the live probe set
     are path-neutral vs shared Null probes and must not burn the invent drain.
+
+    #21: invent-introduced motif path-shortens (humid/arid/…) are also not durable
+    pre-floor fuel — Null-frozen scoreboard never credits them as cascade path
+    exceed. Durable stays cascade/shared path + structural only.
     """
     out: list[str] = []
+    cascade_shortens: list[str] = []
+    has_structural = False
+    has_total = False
     for reason in reasons:
-        if reason == "structural_score" or reason == "probe_path_len_total":
-            out.append(reason)
+        if reason == "structural_score":
+            has_structural = True
+        elif reason == "probe_path_len_total":
+            has_total = True
         elif reason.startswith("probe_path_shorter:"):
-            out.append(reason)
+            topic = reason.split(":", 1)[1]
+            if _is_cascade_probe_topic(topic):
+                cascade_shortens.append(reason)
+    if has_structural:
+        out.append("structural_score")
+    out.extend(cascade_shortens)
+    # Total path drop is durable only with cascade probe shorten evidence —
+    # motif-only path economy must not reopen the durable drain (#15/#21).
+    if has_total and cascade_shortens:
+        out.append("probe_path_len_total")
     return out
 
 
