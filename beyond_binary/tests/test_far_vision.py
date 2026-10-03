@@ -2331,6 +2331,15 @@ class ProductiveInventTests(unittest.TestCase):
                 int(report.get("invent_body_synthesize_cross_domain_count") or 0), 2
             )
             self.assertGreaterEqual(len(report.get("invent_body_synthesize_domains") or []), 2)
+            # #24: complete same-center invent-body domain coverage (incl. optical).
+            self.assertIn("invent_body_synthesize_domain_complete", exceeds)
+            self.assertGreaterEqual(
+                int(report.get("invent_body_synthesize_domain_complete_count") or 0), 3
+            )
+            domains = set(report.get("invent_body_synthesize_domains") or [])
+            self.assertTrue(
+                {"thermal", "ontology", "optical"}.issubset(domains), msg=domains
+            )
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2363,6 +2372,7 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_form_product_coverage_count=", ev)
             self.assertIn("invent_body_synthesize_coverage_count=", ev)
             self.assertIn("invent_body_synthesize_cross_domain_count=", ev)
+            self.assertIn("invent_body_synthesize_domain_complete_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2392,6 +2402,12 @@ class ProductiveInventTests(unittest.TestCase):
             )
             self.assertGreaterEqual(
                 int(board.get("invent_body_synthesize_cross_domain_count") or 0), 2
+            )
+            self.assertIn(
+                "invent_body_synthesize_domain_complete", board.get("exceeds") or []
+            )
+            self.assertGreaterEqual(
+                int(board.get("invent_body_synthesize_domain_complete_count") or 0), 3
             )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
@@ -3078,6 +3094,160 @@ class ProductiveInventTests(unittest.TestCase):
             if s == "prim_invent_dual_attach"
         )
         self.assertLessEqual(dual_attach_n, 2, msg=report["search"].get("invent_specialties"))
+
+    def test_product_exceed_credits_domain_complete_body_synthesize(self):
+        """#24: full same-center invent-body coverage earns completeness; 2-of-3 fails closed."""
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import product_scoreboard as sb
+
+        base_score = {
+            "dual_coverage": 1.0,
+            "link_symmetry": 1.0,
+            "unused_path_cost": 0.0,
+            "node_count": 10,
+        }
+        mind_poles = [
+            "water",
+            "ice",
+            "absence",
+            "presence",
+            "bright",
+            "dim",
+            "day",
+            "night",
+        ]
+        null_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_synthesize_poles": [],
+            "invent_emit_count": 0,
+        }
+        # Thermal+ontology only while mind answers optical → no completeness class.
+        cross_incomplete = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_synthesize_poles": [
+                "water",
+                "ice",
+                "absence",
+                "presence",
+                "latent",
+                "manifest",
+            ],
+            "invent_emit_count": 1,
+        }
+        _ok, exceeds = sb.evaluate_product_exceed(
+            null_arm, cross_incomplete, probes=("water",)
+        )
+        self.assertIn("invent_body_synthesize_cross_domain", exceeds)
+        self.assertNotIn("invent_body_synthesize_domain_complete", exceeds)
+        self.assertFalse(
+            invent_mod.same_center_body_synthesize_complete(
+                invent_mod.form_product_domains(mind_poles),
+                invent_mod.invent_body_synthesize_domains(
+                    cross_incomplete["invent_body_synthesize_poles"]
+                ),
+            )
+        )
+        # All mind-answered domains on invent bodies → completeness vs Null.
+        complete = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_synthesize_poles": [
+                "water",
+                "ice",
+                "absence",
+                "presence",
+                "bright",
+                "dim",
+                "day",
+                "night",
+            ],
+            "invent_emit_count": 1,
+        }
+        exceeded2, exceeds2 = sb.evaluate_product_exceed(
+            null_arm, complete, probes=("water",)
+        )
+        self.assertTrue(exceeded2)
+        self.assertIn("invent_body_synthesize_domain_complete", exceeds2)
+        self.assertIn("invent_body_synthesize_domain_complete:optical", exceeds2)
+        self.assertIn("invent_body_synthesize_domain_complete:ontology", exceeds2)
+        self.assertIn("invent_body_synthesize_domain_complete:thermal", exceeds2)
+        # Preserve #23 cross-domain class alongside completeness.
+        self.assertIn("invent_body_synthesize_cross_domain", exceeds2)
+
+    def test_scoreboard_domain_complete_invent_body_synthesize(self):
+        """#24: completeness pass invents optical; bodies cover all mind domains."""
+        from beyond_binary import lexicon as lex
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary.center import (
+            MAX_DOMAIN_COMPLETE_FOLLOW_ONS,
+            MAX_DOMAIN_MISS_FOLLOW_ONS,
+            MAX_FORM_PRODUCTIVE_FOLLOW_ONS,
+        )
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+        exceeds = report.get("exceeds") or []
+        # Preserve tip+#23 classes + cascade path floor.
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertIn("invent_form_product_coverage", exceeds)
+        self.assertIn("invent_body_synthesize_cross_domain", exceeds)
+        self.assertEqual(int(report["null"].get("probe_path_len_total") or 0), 88)
+        self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
+        self.assertEqual(int(report["null"].get("invent_count") or 0), 0)
+        self.assertEqual(int(report.get("null_invent_body_synthesize_count") or 0), 0)
+        self.assertTrue(report.get("form_exceed"))
+        # #24: complete same-center domain coverage (optical no longer mind-only).
+        self.assertIn("invent_body_synthesize_domain_complete", exceeds)
+        self.assertGreaterEqual(
+            int(report.get("invent_body_synthesize_domain_complete_count") or 0), 3
+        )
+        domains = set(report.get("invent_body_synthesize_domains") or [])
+        self.assertTrue(
+            {"thermal", "ontology", "optical"}.issubset(domains), msg=domains
+        )
+        body_syn = report.get("invent_body_synthesize_poles") or []
+        optical_poles = [p for p in body_syn if lex.pole_domain(p) == "optical"]
+        self.assertTrue(optical_poles, msg=body_syn)
+        # Mind-answered cascade poles must be invent-body reachable (not glow-only).
+        self.assertTrue(
+            {"bright", "dim", "day", "night"} & set(optical_poles),
+            msg=optical_poles,
+        )
+        self.assertFalse(
+            any(
+                str(p).startswith("ir")
+                or str(p).startswith("more-")
+                or str(p).startswith("more_")
+                for p in body_syn
+            ),
+            msg=body_syn,
+        )
+        # Completeness vehicle — not form soft-cap or bare domain-miss inflation.
+        self.assertEqual(MAX_FORM_PRODUCTIVE_FOLLOW_ONS, 1)
+        self.assertEqual(MAX_DOMAIN_MISS_FOLLOW_ONS, 1)
+        self.assertEqual(MAX_DOMAIN_COMPLETE_FOLLOW_ONS, 1)
+        invent_count = int(report.get("invent_count") or 0)
+        self.assertGreaterEqual(invent_count, 5)
+        self.assertLess(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
+        instances = report["search"].get("invent_instances") or []
+        rehangs = [i for i in instances if str(i).startswith("rehang-")]
+        self.assertGreaterEqual(len(rehangs), 2, msg=instances)
+        dual_attach_n = sum(
+            1
+            for s in (report["search"].get("invent_specialties") or [])
+            if s == "prim_invent_dual_attach"
+        )
+        self.assertLessEqual(dual_attach_n, 3, msg=report["search"].get("invent_specialties"))
+        self.assertFalse(report.get("meet_only_invent"))
 
     def test_durable_invent_excludes_motif_path_shortens(self):
         """#21: invent-motif path-shortens are not pre-floor cascade durable fuel."""
