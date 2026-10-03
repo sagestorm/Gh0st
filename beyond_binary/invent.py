@@ -1130,20 +1130,194 @@ def edit_ast_couples_invent_specialty(ast: list[Any] | tuple[Any, ...]) -> bool:
     return bool(ops)
 
 
+def invent_specialty_class_from_ast(
+    ast: list[Any] | tuple[Any, ...] | None,
+) -> str | None:
+    """#19: specialty class name ``couple_program_to_invent_edit`` would mint."""
+    if not ast:
+        return None
+    ops = [
+        str(step.get("op", ""))
+        for step in ast
+        if isinstance(step, dict) and step.get("op")
+    ]
+    if not ops:
+        return None
+    if len(ops) == 1 and ops[0] == "wedge":
+        return "prim_invent_wedge_span"
+    if ops and all(o == "add_dual" for o in ops):
+        if len(ops) > 1:
+            return "prim_invent_chain_depth"
+        return "prim_invent_dual_attach"
+    if len(ops) == 1 and ops[0] == "rehang":
+        return "prim_invent_rehang_shift"
+    fingerprint = "+".join(ops)
+    return f"prim_invent_{normalize(fingerprint)[:18]}"
+
+
+def invent_emit_fields_from_body(
+    body: dict[str, Any] | None,
+    *,
+    cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """#19: invent_* emit fields from interpreting an invent body's CapProgram.
+
+    Key presence is behavioral form evidence (zero values still count for
+    scoreboard form_exceed). Cache by store_path when collecting an arm.
+    """
+    if not isinstance(body, dict):
+        return {}
+    store_path = body.get("store_path")
+    if not store_path:
+        return {}
+    key = str(store_path)
+    if cache is not None and key in cache:
+        return dict(cache[key])
+    from . import capability as capability_mod
+    from . import store as store_mod
+
+    try:
+        prog = capability_mod.load_program(store_path)
+        body_eng = Engine(store_mod.load(store_path))
+        out = capability_mod.interpret(prog, body_eng)
+    except Exception:  # noqa: BLE001 — missing/corrupt body → no emit evidence
+        emits: dict[str, Any] = {}
+        if cache is not None:
+            cache[key] = emits
+        return emits
+    result = out.get("result") if isinstance(out, dict) else None
+    emits = {
+        str(k): v
+        for k, v in (result or {}).items()
+        if str(k).startswith("invent_")
+    }
+    if cache is not None:
+        cache[key] = dict(emits)
+    return emits
+
+
+def embodied_invent_form_metrics(
+    mind_store: Path | str | None,
+) -> tuple[set[str], dict[str, float]]:
+    """#19: embodied invent specialty classes + max numeric invent_* emits."""
+    if mind_store is None:
+        return set(), {}
+    registry = bodies.load_registry(mind_store)
+    classes: set[str] = set()
+    emit_max: dict[str, float] = {}
+    cache: dict[str, dict[str, Any]] = {}
+    for rec in registry.bodies:
+        body = rec.to_dict()
+        for name in invent_specialty_names_from_body(body):
+            classes.add(name)
+        for ek, ev in invent_emit_fields_from_body(body, cache=cache).items():
+            try:
+                fv = float(ev)
+            except (TypeError, ValueError):
+                continue
+            prev = emit_max.get(ek)
+            if prev is None or fv > prev:
+                emit_max[ek] = fv
+    return classes, emit_max
+
+
+def project_invent_emit_from_edit(
+    edit: dict[str, Any] | None,
+    *,
+    instance: str,
+    cause: str,
+    effect: str,
+) -> dict[str, Any]:
+    """#19: trial-project invent_* emits for an edit_ast without persisting a body."""
+    if not edit or edit.get("kind") != "edit_ast":
+        return {}
+    from . import capability as capability_mod
+
+    torus = seed_body_from_search_edit(
+        edit, instance=instance, cause=cause, effect=effect
+    )
+    body_eng = Engine(torus)
+    try:
+        prog = capability_mod.initial_program_for(body_eng, normalize(instance)[:24])
+        prog = capability_mod.evolve_program(prog, body_eng)
+        prog = capability_mod.couple_program_to_invent_edit(prog, body_eng, edit)
+        out = capability_mod.interpret(prog, body_eng)
+    except Exception:  # noqa: BLE001 — projection failure → no emit evidence
+        return {}
+    result = out.get("result") if isinstance(out, dict) else None
+    return {
+        str(k): v
+        for k, v in (result or {}).items()
+        if str(k).startswith("invent_")
+    }
+
+
+def candidate_earns_distinct_form_product(
+    ast: list[Any] | tuple[Any, ...] | None,
+    *,
+    embodied_classes: set[str],
+    embodied_emit_max: dict[str, float],
+    projected_emits: dict[str, Any] | None = None,
+    instance: str = "",
+    cause: str = "",
+    effect: str = "",
+    edit: dict[str, Any] | None = None,
+) -> bool:
+    """#19: post-floor invent must mint a new specialty class and/or non-trivial emit.
+
+    Non-trivial = invent_* key with value > 0 that is new or strictly exceeds the
+    embodied max for that key. Zero-valued emits (e.g. rehang sticky) do not
+    unlock post-floor clone floods.
+    """
+    cls = invent_specialty_class_from_ast(ast)
+    if cls and cls not in embodied_classes:
+        return True
+    emits = projected_emits
+    if emits is None:
+        emits = project_invent_emit_from_edit(
+            edit
+            if edit is not None
+            else {"kind": "edit_ast", "ast": list(ast or [])},
+            instance=instance or "form-proj",
+            cause=cause or "cause",
+            effect=effect or "effect",
+        )
+    for ek, ev in (emits or {}).items():
+        try:
+            fv = float(ev)
+        except (TypeError, ValueError):
+            continue
+        if fv <= 0.0:
+            continue
+        prev = embodied_emit_max.get(ek)
+        if prev is None or fv > prev + 1e-12:
+            return True
+    return False
+
+
 def search_has_form_productive_invent_candidate(
     eng: Engine,
     *,
     used_instances: set[str] | None = None,
     limit: int = 6,
+    mind_store: Path | str | None = None,
 ) -> bool:
-    """#18: True when search has an applyable invent AST that embodies invent form.
+    """#18/#19: True when search has an applyable invent AST that earns form product.
 
-    Includes durable path/structural invents (they couple ``prim_invent_*``) and
-    post-floor form-productive meet invents (typed add_dual / chain / …) once
-    the durable pool is empty. Rejects candidates that fail the trial gate
-    (including meet-only while a durable exceed remains).
+    Durable path/structural invents always qualify. Post-floor (durable pool empty)
+    candidates must mint a **new** invent specialty class and/or a non-trivial
+    invent_* emit vs already-embodied form metrics — stopping identical
+    ``prim_invent_dual_attach`` soft-cap floods.
     """
     from . import search_substrate as search_mod
+
+    durable_open = search_has_product_exceed_candidate(
+        eng, used_instances=used_instances, limit=limit
+    )
+    embodied_classes: set[str] = set()
+    embodied_emit_max: dict[str, float] = {}
+    if mind_store is not None and not durable_open:
+        embodied_classes, embodied_emit_max = embodied_invent_form_metrics(mind_store)
 
     for row in search_mod.search_invent_asts(
         eng, used_instances=used_instances, limit=limit
@@ -1154,7 +1328,19 @@ def search_has_form_productive_invent_candidate(
         ok, _pre, _post, _reason = _trial_search_edit(
             eng, {"kind": "edit_ast", "ast": ast}
         )
-        if ok:
+        if not ok:
+            continue
+        if durable_open:
+            return True
+        if candidate_earns_distinct_form_product(
+            ast,
+            embodied_classes=embodied_classes,
+            embodied_emit_max=embodied_emit_max,
+            instance=str(row.get("instance") or ""),
+            cause=str(row.get("cause") or ""),
+            effect=str(row.get("effect") or ""),
+            edit={"kind": "edit_ast", "ast": ast},
+        ):
             return True
     return False
 
@@ -1232,6 +1418,8 @@ def invent_and_embody(
     # Search invent may reject via score/digest gate; try a few candidates.
     # #10: defer meet-only (skip, do not abandon) while an exceed candidate remains
     # so C4 invent_domain can still apply path-neutral meet after exceeds are gone.
+    # #19: post-floor skip clone form floods (identical dual_attach) while a distinct
+    # specialty class / non-trivial invent_* emit candidate remains.
     proposal = None
     skipped_meet_only: set[str] = set()
     for _attempt in range(8):
@@ -1251,6 +1439,23 @@ def invent_and_embody(
         ):
             break
         ok, pre, post, reason = _trial_search_edit(eng, proposal.edit)
+        if ok and not search_has_product_exceed_candidate(eng):
+            # Post-floor: require distinct form product vs embodied invent bodies.
+            embodied_classes, embodied_emit_max = embodied_invent_form_metrics(
+                mind_store
+            )
+            ast = list((proposal.edit or {}).get("ast") or [])
+            if not candidate_earns_distinct_form_product(
+                ast,
+                embodied_classes=embodied_classes,
+                embodied_emit_max=embodied_emit_max,
+                instance=proposal.instance,
+                cause=proposal.cause,
+                effect=proposal.effect,
+                edit=proposal.edit,
+            ):
+                ok = False
+                reason = "clone_form_flood"
         if ok:
             break
         detail = {
@@ -1264,8 +1469,8 @@ def invent_and_embody(
             "provenance": "search-substrate:invent",
         }
         store.append_activity([detail], mind_store)
-        if reason == "meet_only_while_exceed":
-            # Keep candidate available for a later invent once no exceed remains.
+        if reason in ("meet_only_while_exceed", "clone_form_flood"):
+            # Keep candidate available; durable drain / distinct-form search continues.
             skipped_meet_only.add(normalize(proposal.instance))
         else:
             mark_abandoned(proposal.instance, mind_store, why=reason)

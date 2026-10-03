@@ -2277,7 +2277,7 @@ class ProductiveInventTests(unittest.TestCase):
         _ = invent_mod
 
     def test_scoreboard_null_arm_isolated_under_ambient_search(self):
-        """#17/#18: ambient search must not pollute Null arm or greenwash product_exceed."""
+        """#17/#19: ambient search must not pollute Null arm or greenwash product_exceed."""
         import os
         from beyond_binary import product_scoreboard as sb
         from beyond_binary import substrate as substrate_mod
@@ -2294,12 +2294,15 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertEqual(int(null.get("invent_count") or 0), 0)
             self.assertEqual(null.get("invent_instances") or [], [])
             self.assertEqual(int(null.get("invent_specialty_count") or 0), 0)
+            self.assertEqual(int(null.get("invent_emit_count") or 0), 0)
             # Search keeps path exceed (88→80 class) + form invent depth vs honest Null.
             self.assertGreaterEqual(int(report.get("invent_count") or 0), 3)
             self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
             self.assertTrue(report.get("follow_on_invent"))
             self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
             self.assertTrue(report.get("form_exceed"))
+            self.assertGreaterEqual(int(report.get("invent_emit_count") or 0), 1)
+            self.assertEqual(int(report.get("null_invent_emit_count") or 0), 0)
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2310,7 +2313,7 @@ class ProductiveInventTests(unittest.TestCase):
             substrate_mod.reset_logs_for_tests()
 
     def test_verify_p1_surfaces_product_exceed_under_ambient_search(self):
-        """#17/#18: P1 surfaces product/form exceed adjunct; SENTIENCE stays fail-closed."""
+        """#17/#19: P1 surfaces product/form-behavior exceed adjunct; SENTIENCE stays fail-closed."""
         import os
         from beyond_binary import substrate as substrate_mod
         from beyond_binary import verify
@@ -2326,6 +2329,8 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("product_exceed=", ev)
             self.assertIn("form_exceed=", ev)
             self.assertIn("invent_specialty_count=", ev)
+            self.assertIn("invent_emit_count=", ev)
+            self.assertIn("null_invent_emit_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2334,6 +2339,8 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertFalse(board.get("meet_only_invent"))
             self.assertGreaterEqual(int(board.get("invent_count") or 0), 3)
             self.assertGreaterEqual(int(board.get("invent_specialty_count") or 0), 1)
+            self.assertGreaterEqual(int(board.get("invent_emit_count") or 0), 1)
+            self.assertEqual(int(board.get("null_invent_emit_count") or 0), 0)
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
             self.assertIn("SENTIENCE", by_id)
@@ -2523,7 +2530,7 @@ class ProductiveInventTests(unittest.TestCase):
                 substrate_mod.reset_logs_for_tests()
 
     def test_scoreboard_form_productive_invent_past_path_floor(self):
-        """#18: invent continues past path-floor; form_exceed honesty vs Null."""
+        """#18/#19: invent past path-floor; behavioral form_exceed; no dual_attach flood."""
         from beyond_binary import product_scoreboard as sb
 
         report = sb.run_scoreboard()
@@ -2533,6 +2540,12 @@ class ProductiveInventTests(unittest.TestCase):
         invent_count = int(report.get("invent_count") or 0)
         self.assertGreaterEqual(invent_count, 3)
         self.assertLessEqual(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
+        # #19: anti-flood — must not burn the soft cap on identical dual_attach clones.
+        self.assertLess(
+            invent_count,
+            sb.MAX_FOLLOW_ON_INVENTS,
+            msg=f"dual_attach flood still hits soft cap: {report['search'].get('invent_instances')}",
+        )
         instances = report["search"].get("invent_instances") or []
         rehangs = [i for i in instances if str(i).startswith("rehang-")]
         self.assertGreaterEqual(len(rehangs), 2, msg=instances)
@@ -2544,6 +2557,14 @@ class ProductiveInventTests(unittest.TestCase):
         self.assertTrue(report.get("form_exceed"))
         self.assertGreaterEqual(int(report.get("invent_specialty_count") or 0), 1)
         self.assertEqual(int(report.get("null_invent_specialty_count") or 0), 0)
+        # #19: behavioral form exceed — invent_* emit keys, not name presence alone.
+        self.assertGreaterEqual(int(report.get("invent_emit_count") or 0), 1)
+        self.assertEqual(int(report.get("null_invent_emit_count") or 0), 0)
+        emit_keys = report["search"].get("invent_emit_keys") or []
+        self.assertTrue(
+            all(str(k).startswith("invent_") for k in emit_keys),
+            msg=emit_keys,
+        )
         specialties = report["search"].get("invent_specialties") or []
         self.assertTrue(
             all(str(s).startswith("prim_invent_") for s in specialties),
@@ -2552,6 +2573,20 @@ class ProductiveInventTests(unittest.TestCase):
         self.assertFalse(
             any(str(s).startswith("prim_search_") for s in specialties),
             msg=specialties,
+        )
+        # Distinct form product: ≥2 specialty classes OR a non-rehang class present
+        # (not six identical prim_invent_dual_attach).
+        unique_specs = set(specialties)
+        dual_attach_n = sum(1 for s in specialties if s == "prim_invent_dual_attach")
+        self.assertTrue(
+            len(unique_specs) >= 2
+            or any(s != "prim_invent_rehang_shift" for s in unique_specs),
+            msg=specialties,
+        )
+        self.assertLessEqual(
+            dual_attach_n,
+            2,
+            msg=f"dual_attach clone flood: {specialties}",
         )
         # Sticky path exceed class preserved (Null isolation + #16 rehangs).
         self.assertEqual(int(report["null"].get("probe_path_len_total") or 0), 88)
