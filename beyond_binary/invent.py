@@ -846,6 +846,17 @@ def refresh_invent_registry(
         from . import substrate as _sub
 
         _sub.record_consult_error("invent", exc)
+    # #23: after form invent landed, prefer domain-opening invents over
+    # within-covered-domain dual_attach / chain clones (soft-cap unchanged).
+    if form_productive_invent_landed(mind_store):
+        under = under_covered_body_synthesize_domains(eng, mind_store)
+        if under:
+            for cand in registry.candidates:
+                if cand.used or cand.abandoned or cand.source != "search":
+                    continue
+                ast = list((cand.edit or {}).get("ast") or [])
+                if invent_touched_domains(ast) & under:
+                    cand.priority = max(float(cand.priority), 3.5)
     save_invent_registry(registry, mind_store)
     return registry
 
@@ -1276,6 +1287,127 @@ def invent_body_synthesize_product_poles(
                     out.append(topic)
                 break
     return tuple(out)
+
+
+def form_product_domains(poles: Iterable[str]) -> frozenset[str]:
+    """#23: lexicon domains represented by readable form-product poles."""
+    from . import lexicon as lex
+
+    out: set[str] = set()
+    for pole in poles:
+        if _is_digest_or_ir_pole(pole):
+            continue
+        domain = lex.pole_domain(pole)
+        if domain:
+            out.add(domain)
+    return frozenset(out)
+
+
+def invent_body_synthesize_domains(poles: Iterable[str]) -> frozenset[str]:
+    """#23: lexicon domains invent bodies synthesize (readable poles only)."""
+    return form_product_domains(poles)
+
+
+def invent_touched_domains(
+    ast: list[Any] | tuple[Any, ...] | None,
+) -> frozenset[str]:
+    """#23: lexicon domains invent-touched by readable product duals in edit_ast."""
+    from . import lexicon as lex
+
+    out: set[str] = set()
+    for cause, effect in invent_touched_product_duals(list(ast or [])):
+        for name in (cause, effect):
+            domain = lex.pole_domain(name)
+            if domain:
+                out.add(domain)
+    return frozenset(out)
+
+
+def form_productive_invent_landed(mind_store: Path | str | None) -> bool:
+    """#23: True when ≥1 non-rehang invent body exists (form budget spent)."""
+    if mind_store is None:
+        return False
+    registry = bodies.load_registry(mind_store)
+    for rec in registry.bodies:
+        domain = normalize(getattr(rec, "domain", "") or "")
+        name = normalize(getattr(rec, "name", "") or "")
+        token = domain or name
+        if token.startswith("rehang") or "rehang-" in token:
+            continue
+        return True
+    return False
+
+
+def under_covered_body_synthesize_domains(
+    eng: Engine,
+    mind_store: Path | str | None,
+) -> frozenset[str]:
+    """#23: mind-answered domains with zero invent-body synthesize poles.
+
+    Empty unless the mind already answers ≥2 seeded domains and invent bodies
+    already synthesize ≥1 domain (thermal #22 earned) — otherwise domain-miss
+    must not steal the form-budget vehicle.
+    """
+    mind_domains = form_product_domains(answerable_form_product_poles(eng))
+    if len(mind_domains) < 2:
+        return frozenset()
+    body_poles = invent_body_synthesize_product_poles(mind_store, eng)
+    body_domains = invent_body_synthesize_domains(body_poles)
+    if not body_domains:
+        return frozenset()
+    return frozenset(d for d in mind_domains if d not in body_domains)
+
+
+def candidate_opens_body_synthesize_domain(
+    eng: Engine,
+    mind_store: Path | str | None,
+    ast: list[Any] | tuple[Any, ...] | None,
+) -> bool:
+    """#23: True when edit_ast invent-touches an under-covered body-synthesize domain."""
+    under = under_covered_body_synthesize_domains(eng, mind_store)
+    if not under:
+        return False
+    return bool(invent_touched_domains(ast) & under)
+
+
+def search_has_domain_miss_invent_candidate(
+    eng: Engine,
+    *,
+    used_instances: set[str] | None = None,
+    limit: int = 6,
+    mind_store: Path | str | None = None,
+) -> bool:
+    """#23: True when an invent AST invent-touches an under-covered domain.
+
+    Durable invents always take precedence. Requires mind multi-domain answers
+    and existing invent-body synthesize in at least one domain (#22 thermal),
+    plus an applyable invent that invent-touches a still-missing domain.
+    """
+    from . import search_substrate as search_mod
+
+    if mind_store is None:
+        return False
+    if search_has_product_exceed_candidate(
+        eng, used_instances=used_instances, limit=limit
+    ):
+        return False
+    under = under_covered_body_synthesize_domains(eng, mind_store)
+    if not under:
+        return False
+    for row in search_mod.search_invent_asts(
+        eng, used_instances=used_instances, limit=limit
+    ):
+        ast = list(row.get("ast") or [])
+        if not edit_ast_couples_invent_specialty(ast):
+            continue
+        if not (invent_touched_domains(ast) & under):
+            continue
+        ok, _pre, _post, _reason = _trial_search_edit(
+            eng, {"kind": "edit_ast", "ast": ast}
+        )
+        if ok:
+            return True
+    return False
 
 
 def mind_form_product_gain(
@@ -1744,6 +1876,19 @@ def invent_and_embody(
             ) and not candidate_earns_mind_form_product(eng, ast):
                 ok = False
                 reason = "mind_form_miss"
+            # #23: after form invent landed, prefer domain-opening invents while
+            # under-covered same-center domains remain (not thermal-only body depth).
+            elif (
+                form_productive_invent_landed(mind_store)
+                and search_has_domain_miss_invent_candidate(
+                    eng, mind_store=mind_store
+                )
+                and not candidate_opens_body_synthesize_domain(
+                    eng, mind_store, ast
+                )
+            ):
+                ok = False
+                reason = "domain_miss_miss"
         if ok:
             break
         detail = {
@@ -1761,8 +1906,9 @@ def invent_and_embody(
             "meet_only_while_exceed",
             "clone_form_flood",
             "mind_form_miss",
+            "domain_miss_miss",
         ):
-            # Keep candidate available; durable drain / mind-form search continues.
+            # Keep candidate available; durable / mind-form / domain-miss continues.
             skipped_meet_only.add(normalize(proposal.instance))
         else:
             mark_abandoned(proposal.instance, mind_store, why=reason)

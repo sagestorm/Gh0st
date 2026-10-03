@@ -2325,6 +2325,12 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertEqual(
                 int(report.get("null_invent_body_synthesize_count") or 0), 0
             )
+            # #23: cross-domain invent-body synthesize (not thermal-only).
+            self.assertIn("invent_body_synthesize_cross_domain", exceeds)
+            self.assertGreaterEqual(
+                int(report.get("invent_body_synthesize_cross_domain_count") or 0), 2
+            )
+            self.assertGreaterEqual(len(report.get("invent_body_synthesize_domains") or []), 2)
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2356,6 +2362,7 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_introduced_form_product_count=", ev)
             self.assertIn("invent_form_product_coverage_count=", ev)
             self.assertIn("invent_body_synthesize_coverage_count=", ev)
+            self.assertIn("invent_body_synthesize_cross_domain_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2379,6 +2386,12 @@ class ProductiveInventTests(unittest.TestCase):
             )
             self.assertEqual(
                 int(board.get("null_invent_body_synthesize_count") or 0), 0
+            )
+            self.assertIn(
+                "invent_body_synthesize_cross_domain", board.get("exceeds") or []
+            )
+            self.assertGreaterEqual(
+                int(board.get("invent_body_synthesize_cross_domain_count") or 0), 2
             )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
@@ -2905,6 +2918,166 @@ class ProductiveInventTests(unittest.TestCase):
         invent_count = int(report.get("invent_count") or 0)
         self.assertGreaterEqual(invent_count, 3)
         self.assertLess(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
+
+    def test_product_exceed_credits_cross_domain_body_synthesize(self):
+        """#23: multi-domain invent-body synthesize earns a product_exceed class."""
+        from beyond_binary import product_scoreboard as sb
+
+        base_score = {
+            "dual_coverage": 1.0,
+            "link_symmetry": 1.0,
+            "unused_path_cost": 0.0,
+            "node_count": 10,
+        }
+        null_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": [
+                "water",
+                "ice",
+                "absence",
+                "presence",
+                "bright",
+                "dim",
+            ],
+            "invent_body_synthesize_poles": [],
+            "invent_emit_count": 0,
+        }
+        # Thermal-only body synthesize while mind is multi-domain → no cross-domain class.
+        thermal_only = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": [
+                "water",
+                "ice",
+                "absence",
+                "presence",
+                "bright",
+                "dim",
+            ],
+            "invent_body_synthesize_poles": ["water", "ice", "hot"],
+            "invent_emit_count": 1,
+        }
+        exceeded, exceeds = sb.evaluate_product_exceed(
+            null_arm, thermal_only, probes=("water",)
+        )
+        self.assertTrue(exceeded)
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertNotIn("invent_body_synthesize_cross_domain", exceeds)
+        # Thermal + ontology body synthesize → cross-domain class.
+        cross = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": [
+                "water",
+                "ice",
+                "absence",
+                "presence",
+                "bright",
+                "dim",
+            ],
+            "invent_body_synthesize_poles": [
+                "water",
+                "ice",
+                "latent",
+                "manifest",
+                "absence",
+            ],
+            "invent_emit_count": 1,
+        }
+        exceeded2, exceeds2 = sb.evaluate_product_exceed(
+            null_arm, cross, probes=("water",)
+        )
+        self.assertTrue(exceeded2)
+        self.assertIn("invent_body_synthesize_cross_domain", exceeds2)
+        self.assertIn("invent_body_synthesize_cross_domain:ontology", exceeds2)
+        self.assertIn("invent_body_synthesize_cross_domain:thermal", exceeds2)
+        # Mind-only multi-domain without body synthesize → no cross-domain class.
+        mind_only = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": [
+                "water",
+                "ice",
+                "absence",
+                "presence",
+                "bright",
+                "dim",
+            ],
+            "invent_body_synthesize_poles": [],
+            "invent_emit_count": 2,
+        }
+        _ok3, exceeds3 = sb.evaluate_product_exceed(
+            null_arm, mind_only, probes=("water",)
+        )
+        self.assertNotIn("invent_body_synthesize_cross_domain", exceeds3)
+
+    def test_scoreboard_cross_domain_invent_body_synthesize(self):
+        """#23: invent opens under-covered domains; bodies synthesize ≥2 domains."""
+        from beyond_binary import lexicon as lex
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary.center import (
+            MAX_DOMAIN_MISS_FOLLOW_ONS,
+            MAX_FORM_PRODUCTIVE_FOLLOW_ONS,
+        )
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+        exceeds = report.get("exceeds") or []
+        # Preserve tip+#22 classes + cascade path floor.
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertIn("invent_form_product_coverage", exceeds)
+        self.assertEqual(int(report["null"].get("probe_path_len_total") or 0), 88)
+        self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
+        self.assertEqual(int(report["null"].get("invent_count") or 0), 0)
+        self.assertTrue(report.get("form_exceed"))
+        # #23: cross-domain body synthesize class (thermal-only insufficient).
+        self.assertIn("invent_body_synthesize_cross_domain", exceeds)
+        self.assertGreaterEqual(
+            int(report.get("invent_body_synthesize_cross_domain_count") or 0), 2
+        )
+        domains = set(report.get("invent_body_synthesize_domains") or [])
+        self.assertGreaterEqual(len(domains), 2, msg=domains)
+        self.assertIn("thermal", domains)
+        self.assertTrue(
+            {"ontology", "optical"} & domains,
+            msg=domains,
+        )
+        body_syn = report.get("invent_body_synthesize_poles") or []
+        non_thermal = [
+            p for p in body_syn if lex.pole_domain(p) in {"ontology", "optical"}
+        ]
+        self.assertTrue(non_thermal, msg=body_syn)
+        self.assertFalse(
+            any(
+                str(p).startswith("ir")
+                or str(p).startswith("more-")
+                or str(p).startswith("more_")
+                for p in body_syn
+            ),
+            msg=body_syn,
+        )
+        # Domain-miss vehicle — not soft-cap inflation of form follow-ons.
+        self.assertEqual(MAX_FORM_PRODUCTIVE_FOLLOW_ONS, 1)
+        self.assertEqual(MAX_DOMAIN_MISS_FOLLOW_ONS, 1)
+        invent_count = int(report.get("invent_count") or 0)
+        self.assertGreaterEqual(invent_count, 4)
+        self.assertLess(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
+        instances = report["search"].get("invent_instances") or []
+        rehangs = [i for i in instances if str(i).startswith("rehang-")]
+        self.assertGreaterEqual(len(rehangs), 2, msg=instances)
+        # ≥1 domain-opening invent after thermal form chain (not six dual_attach).
+        dual_attach_n = sum(
+            1
+            for s in (report["search"].get("invent_specialties") or [])
+            if s == "prim_invent_dual_attach"
+        )
+        self.assertLessEqual(dual_attach_n, 2, msg=report["search"].get("invent_specialties"))
 
     def test_durable_invent_excludes_motif_path_shortens(self):
         """#21: invent-motif path-shortens are not pre-floor cascade durable fuel."""
