@@ -1116,6 +1116,45 @@ class InventBodySpecialtyG11Tests(unittest.TestCase):
         self.assertGreater(len(_ec.torus.nodes), len(flat.torus.nodes))
         self.assertIn("invent_chain_depth", out_c.get("result") or {})
 
+    def test_couple_program_multi_dual_chain_wires_sibling_dual(self):
+        """#27: chain invent bodies CapProgram-answer each invent-touched dual."""
+        from beyond_binary import capability as capability_mod
+
+        chain_edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "add_dual",
+                    "cause": "simmer",
+                    "effect": "quench",
+                    "cause_parent": "hot",
+                    "effect_parent": "cold",
+                },
+                {
+                    "op": "add_dual",
+                    "cause": "humid",
+                    "effect": "arid",
+                    "cause_parent": "simmer",
+                    "effect_parent": "quench",
+                },
+            ],
+        }
+        eng, prog, out = self._seed_and_program(
+            chain_edit, instance="chain-cap27", cause="humid", effect="arid"
+        )
+        dual_ops = [
+            o
+            for o in prog.ops
+            if o.get("op") == "dual_answer"
+        ]
+        slots = {str(o.get("into") or "dual"): o.get("topic") for o in dual_ops}
+        self.assertEqual(slots.get("dual"), "simmer")
+        self.assertEqual(slots.get("dual_pair"), "quench")
+        self.assertIn(slots.get("dual_multi_1"), {"humid", "arid"})
+        result = out.get("result") or {}
+        sibling = result.get("dual_multi_1") or {}
+        self.assertIn(sibling.get("topic"), {"humid", "arid"})
+
     def test_invent_and_embody_couples_search_edit(self):
         from beyond_binary import capability as capability_mod
         from beyond_binary import invent as invent_mod
@@ -2358,6 +2397,19 @@ class ProductiveInventTests(unittest.TestCase):
                 int(report.get("null_invent_body_capprogram_product_pair_count") or 0),
                 0,
             )
+            # #27: CapProgram multi-dual / sibling-pair specialty on chain invent.
+            self.assertIn("invent_body_capprogram_product_multi_dual_coverage", exceeds)
+            self.assertGreaterEqual(
+                int(
+                    report.get("invent_body_capprogram_product_multi_dual_coverage_count")
+                    or 0
+                ),
+                1,
+            )
+            self.assertEqual(
+                int(report.get("null_invent_body_capprogram_product_multi_dual_count") or 0),
+                0,
+            )
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2393,6 +2445,9 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_body_synthesize_domain_complete_count=", ev)
             self.assertIn("invent_body_capprogram_product_coverage_count=", ev)
             self.assertIn("invent_body_capprogram_product_pair_coverage_count=", ev)
+            self.assertIn(
+                "invent_body_capprogram_product_multi_dual_coverage_count=", ev
+            )
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2448,6 +2503,21 @@ class ProductiveInventTests(unittest.TestCase):
             )
             self.assertEqual(
                 int(board.get("null_invent_body_capprogram_product_pair_count") or 0),
+                0,
+            )
+            self.assertIn(
+                "invent_body_capprogram_product_multi_dual_coverage",
+                board.get("exceeds") or [],
+            )
+            self.assertGreaterEqual(
+                int(
+                    board.get("invent_body_capprogram_product_multi_dual_coverage_count")
+                    or 0
+                ),
+                1,
+            )
+            self.assertEqual(
+                int(board.get("null_invent_body_capprogram_product_multi_dual_count") or 0),
                 0,
             )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
@@ -3512,6 +3582,55 @@ class ProductiveInventTests(unittest.TestCase):
         )
         self.assertNotIn("invent_body_capprogram_product_pair_coverage", exceeds3)
 
+    def test_product_exceed_credits_invent_body_capprogram_product_multi_dual_coverage(
+        self,
+    ):
+        """#27: multi-dual CapProgram class requires sibling dual poles; pair-only fails."""
+        from beyond_binary import product_scoreboard as sb
+
+        base_score = {
+            "dual_coverage": 1.0,
+            "link_symmetry": 1.0,
+            "unused_path_cost": 0.0,
+            "node_count": 10,
+        }
+        mind_poles = ["water", "ice", "simmer", "quench", "humid", "arid"]
+        null_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_capprogram_product_poles": [],
+            "invent_body_capprogram_product_pair_poles": [],
+            "invent_body_capprogram_product_multi_dual_poles": [],
+            "invent_emit_count": 0,
+        }
+        pair_only = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_capprogram_product_poles": ["simmer"],
+            "invent_body_capprogram_product_pair_poles": ["quench"],
+            "invent_body_capprogram_product_multi_dual_poles": [],
+            "invent_emit_count": 2,
+        }
+        _ok, exceeds = sb.evaluate_product_exceed(
+            null_arm, pair_only, probes=("water",)
+        )
+        self.assertIn("invent_body_capprogram_product_pair_coverage", exceeds)
+        self.assertNotIn("invent_body_capprogram_product_multi_dual_coverage", exceeds)
+        with_sibling = {
+            **pair_only,
+            "invent_body_capprogram_product_multi_dual_poles": ["humid"],
+        }
+        exceeded, exceeds2 = sb.evaluate_product_exceed(
+            null_arm, with_sibling, probes=("water",)
+        )
+        self.assertTrue(exceeded)
+        self.assertIn("invent_body_capprogram_product_multi_dual_coverage", exceeds2)
+        self.assertIn("invent_body_capprogram_product_multi_dual_coverage:humid", exceeds2)
+
     def test_scoreboard_invent_body_capprogram_product_coverage(self):
         """#25: scoreboard CapProgram dual_answer hits invent-touched product poles."""
         from beyond_binary import product_scoreboard as sb
@@ -3567,6 +3686,22 @@ class ProductiveInventTests(unittest.TestCase):
         for pole in cap_pair_poles:
             self.assertIn(pole, body_syn, msg=(pole, sorted(body_syn)))
             self.assertNotIn(pole, cap_poles, msg="pair pole must be effect-side (#26)")
+        # #27: multi-dual chain body CapProgram sibling-pair specialty.
+        self.assertIn("invent_body_capprogram_product_multi_dual_coverage", exceeds)
+        self.assertGreaterEqual(
+            int(report.get("invent_body_capprogram_product_multi_dual_coverage_count") or 0),
+            1,
+        )
+        self.assertEqual(
+            int(report.get("null_invent_body_capprogram_product_multi_dual_count") or 0),
+            0,
+        )
+        cap_multi = report.get("invent_body_capprogram_product_multi_dual_poles") or []
+        self.assertTrue(cap_multi, msg=report.get("exceeds"))
+        self.assertTrue(
+            {"humid", "arid"} & set(cap_multi),
+            msg=(cap_multi, cap_poles, cap_pair_poles),
+        )
         # Soft-caps unchanged — CapProgram retarget is the #25 vehicle.
         self.assertEqual(MAX_FORM_PRODUCTIVE_FOLLOW_ONS, 1)
         self.assertEqual(MAX_DOMAIN_MISS_FOLLOW_ONS, 1)

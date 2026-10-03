@@ -240,6 +240,8 @@ def _op_emit(ctx: dict[str, Any], args: dict[str, Any]) -> None:
             out["dual"] = ctx["dual"]
         elif f == "dual_pair" and "dual_pair" in ctx:
             out["dual_pair"] = ctx["dual_pair"]
+        elif str(f).startswith("dual_multi_") and f in ctx:
+            out[f] = ctx[f]
         elif f in (ctx.get("measures") or {}):
             out[f] = ctx["measures"][f]
 
@@ -647,6 +649,15 @@ def _invent_touched_dual_answer_topic(
     return None
 
 
+def _topic_for_invent_product_dual(eng: Engine, cause: str, effect: str) -> str | None:
+    """Prefer cause leaf; fall back to effect when answerable on the body."""
+    if _dual_answerable_product_topic(eng, cause):
+        return cause
+    if _dual_answerable_product_topic(eng, effect):
+        return effect
+    return None
+
+
 def _invent_touched_effect_dual_answer_topic(
     eng: Engine,
     edit: dict[str, Any] | None,
@@ -794,6 +805,19 @@ def couple_program_to_invent_edit(
         if _set_dual_answer_topic(program, effect_topic, into="dual_pair"):
             program.revisions += 1
             _ensure_emit_field(program, "dual_pair")
+    # #27: sibling / multi-dual — one CapProgram topic per extra invent-touched dual.
+    from . import invent as invent_mod
+
+    leaf_duals = invent_mod.invent_touched_leaf_product_duals(ast)
+    if len(leaf_duals) >= 2:
+        for idx, (c, e) in enumerate(leaf_duals[1:], start=1):
+            sibling_topic = _topic_for_invent_product_dual(eng, c, e)
+            if not sibling_topic:
+                continue
+            into = f"dual_multi_{idx}"
+            if _set_dual_answer_topic(program, sibling_topic, into=into):
+                program.revisions += 1
+                _ensure_emit_field(program, into)
     return program
 
 

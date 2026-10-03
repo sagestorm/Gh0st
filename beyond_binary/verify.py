@@ -974,6 +974,8 @@ def run_verification() -> dict[str, Any]:
             f"{board.get('invent_body_capprogram_product_coverage_count')} "
             f"invent_body_capprogram_product_pair_coverage_count="
             f"{board.get('invent_body_capprogram_product_pair_coverage_count')} "
+            f"invent_body_capprogram_product_multi_dual_coverage_count="
+            f"{board.get('invent_body_capprogram_product_multi_dual_coverage_count')} "
             f"meet_only_invent={board.get('meet_only_invent')} "
             f"invent_count={board.get('invent_count')} "
             f"null_score={board.get('null', {}).get('score')} "
