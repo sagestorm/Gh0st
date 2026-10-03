@@ -2340,6 +2340,14 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertTrue(
                 {"thermal", "ontology", "optical"}.issubset(domains), msg=domains
             )
+            # #25: CapProgram dual_answer invent-touched product specialty vs Null.
+            self.assertIn("invent_body_capprogram_product_coverage", exceeds)
+            self.assertGreaterEqual(
+                int(report.get("invent_body_capprogram_product_coverage_count") or 0), 1
+            )
+            self.assertEqual(
+                int(report.get("null_invent_body_capprogram_product_count") or 0), 0
+            )
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2373,6 +2381,7 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_body_synthesize_coverage_count=", ev)
             self.assertIn("invent_body_synthesize_cross_domain_count=", ev)
             self.assertIn("invent_body_synthesize_domain_complete_count=", ev)
+            self.assertIn("invent_body_capprogram_product_coverage_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2408,6 +2417,15 @@ class ProductiveInventTests(unittest.TestCase):
             )
             self.assertGreaterEqual(
                 int(board.get("invent_body_synthesize_domain_complete_count") or 0), 3
+            )
+            self.assertIn(
+                "invent_body_capprogram_product_coverage", board.get("exceeds") or []
+            )
+            self.assertGreaterEqual(
+                int(board.get("invent_body_capprogram_product_coverage_count") or 0), 1
+            )
+            self.assertEqual(
+                int(board.get("null_invent_body_capprogram_product_count") or 0), 0
             )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
@@ -2840,8 +2858,15 @@ class ProductiveInventTests(unittest.TestCase):
         prog = capability_mod.evolve_program(prog, eng)
         prog = capability_mod.couple_program_to_invent_edit(prog, eng, edit)
         self.assertIn("prim_invent_rehang_shift", prog.primitives)
+        dual_ops = [o for o in prog.ops if o.get("op") == "dual_answer"]
+        self.assertTrue(dual_ops)
+        # #25: CapProgram dual_answer prefers invent-touched leaf poles over root hot.
+        self.assertEqual(dual_ops[0].get("topic"), "ice")
         out = capability_mod.interpret(prog, eng)
-        self.assertIn("invent_rehang_shift", out.get("result") or {})
+        result = out.get("result") or {}
+        self.assertIn("invent_rehang_shift", result)
+        dual = result.get("dual") or {}
+        self.assertEqual(dual.get("topic"), "ice")
 
     def test_product_exceed_credits_invent_body_synthesize_coverage(self):
         """#22: invent-body synthesize hits Null lacks earn a product_exceed class."""
@@ -3247,6 +3272,203 @@ class ProductiveInventTests(unittest.TestCase):
             if s == "prim_invent_dual_attach"
         )
         self.assertLessEqual(dual_attach_n, 3, msg=report["search"].get("invent_specialties"))
+        self.assertFalse(report.get("meet_only_invent"))
+
+    def test_couple_program_retargets_dual_answer_to_invent_touched_product(self):
+        """#25: CapProgram dual_answer prefers invent-touched product poles over roots."""
+        from beyond_binary import capability as capability_mod
+        from beyond_binary import invent as invent_mod
+        from beyond_binary.model import Torus
+
+        # Rehang seed bridges invent-touched poles; _roots stay hot/cold.
+        rehang_edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "rehang",
+                    "cause": "ice",
+                    "effect": "thaw",
+                    "cause_parent": "hot",
+                    "effect_parent": "cold",
+                }
+            ],
+        }
+        torus = invent_mod.seed_body_from_search_edit(
+            rehang_edit, instance="rehang-cap25", cause="ice", effect="thaw"
+        )
+        eng = Engine(torus)
+        eng.assert_no_orphans()
+        prog = capability_mod.initial_program_for(eng, "body-rehang-cap25")
+        initial_topic = next(
+            o for o in prog.ops if o.get("op") == "dual_answer"
+        ).get("topic")
+        # Pre-couple topic is structural root (digest scaffold or domain root), not ice.
+        self.assertNotEqual(initial_topic, "ice")
+        prog = capability_mod.evolve_program(prog, eng)
+        prog = capability_mod.couple_program_to_invent_edit(prog, eng, rehang_edit)
+        self.assertEqual(
+            next(o for o in prog.ops if o.get("op") == "dual_answer").get("topic"),
+            "ice",
+        )
+        self.assertIn("prim_invent_rehang_shift", prog.primitives)
+        dual = (capability_mod.interpret(prog, eng).get("result") or {}).get("dual")
+        self.assertEqual((dual or {}).get("topic"), "ice")
+
+        # Optical add after body growth: domain roots light/dark with glow nested
+        # (matches invent_and_embody warm-up), couple retargets off light → glow.
+        optical_edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "add_dual",
+                    "cause": "glow",
+                    "effect": "shadow",
+                    "cause_parent": "light",
+                    "effect_parent": "dark",
+                }
+            ],
+        }
+        oeng = Engine(Torus())
+        oeng.add_pair("light", "dark")
+        oeng.add_pair(
+            "glow", "shadow", cause_parent="light", effect_parent="dark"
+        )
+        oeng.assert_no_orphans()
+        self.assertEqual(capability_mod._roots(oeng), ("light", "dark"))
+        oprog = capability_mod.initial_program_for(oeng, "body-optical-cap25")
+        self.assertEqual(
+            next(o for o in oprog.ops if o.get("op") == "dual_answer").get("topic"),
+            "light",
+        )
+        oprog = capability_mod.evolve_program(oprog, oeng)
+        oprog = capability_mod.couple_program_to_invent_edit(
+            oprog, oeng, optical_edit
+        )
+        self.assertEqual(
+            next(o for o in oprog.ops if o.get("op") == "dual_answer").get("topic"),
+            "glow",
+        )
+        self.assertIn("prim_invent_dual_attach", oprog.primitives)
+        odual = (capability_mod.interpret(oprog, oeng).get("result") or {}).get(
+            "dual"
+        )
+        self.assertEqual((odual or {}).get("topic"), "glow")
+
+    def test_product_exceed_credits_invent_body_capprogram_product_coverage(self):
+        """#25: CapProgram product poles earn a class; synthesize/emit/root-only do not."""
+        from beyond_binary import product_scoreboard as sb
+
+        base_score = {
+            "dual_coverage": 1.0,
+            "link_symmetry": 1.0,
+            "unused_path_cost": 0.0,
+            "node_count": 10,
+        }
+        mind_poles = ["water", "ice", "bright", "dim", "latent", "manifest"]
+        null_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_synthesize_poles": [],
+            "invent_body_capprogram_product_poles": [],
+            "invent_emit_count": 0,
+        }
+        # Body synthesize + invent_* emit without CapProgram product topics → no #25 class.
+        syn_emit_only = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": list(mind_poles),
+            "invent_body_synthesize_poles": ["water", "ice", "bright", "dim"],
+            "invent_body_capprogram_product_poles": [],
+            "invent_emit_count": 2,
+        }
+        _ok, exceeds = sb.evaluate_product_exceed(
+            null_arm, syn_emit_only, probes=("water",)
+        )
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertNotIn("invent_body_capprogram_product_coverage", exceeds)
+        # Root-like CapProgram topics outside body-syn product poles do not count
+        # (collector already filters; empty cap poles ⇒ no class).
+        root_only = {
+            **syn_emit_only,
+            "invent_body_capprogram_product_poles": [],
+        }
+        _ok2, exceeds2 = sb.evaluate_product_exceed(
+            null_arm, root_only, probes=("water",)
+        )
+        self.assertNotIn("invent_body_capprogram_product_coverage", exceeds2)
+        # CapProgram dual topics on invent-body product poles Null lacks → class.
+        with_cap = {
+            **syn_emit_only,
+            "invent_body_capprogram_product_poles": ["ice", "glow"],
+        }
+        exceeded, exceeds3 = sb.evaluate_product_exceed(
+            null_arm, with_cap, probes=("water",)
+        )
+        self.assertTrue(exceeded)
+        self.assertIn("invent_body_capprogram_product_coverage", exceeds3)
+        self.assertIn("invent_body_capprogram_product_coverage:ice", exceeds3)
+        self.assertIn("invent_body_capprogram_product_coverage:glow", exceeds3)
+        # Digest CapProgram topics alone do not earn the class.
+        digest_only = {
+            **syn_emit_only,
+            "invent_body_capprogram_product_poles": ["irdeadbeeflc", "more-irx"],
+        }
+        _ok4, exceeds4 = sb.evaluate_product_exceed(
+            null_arm, digest_only, probes=("water",)
+        )
+        self.assertNotIn("invent_body_capprogram_product_coverage", exceeds4)
+
+    def test_scoreboard_invent_body_capprogram_product_coverage(self):
+        """#25: scoreboard CapProgram dual_answer hits invent-touched product poles."""
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary.center import (
+            MAX_DOMAIN_COMPLETE_FOLLOW_ONS,
+            MAX_DOMAIN_MISS_FOLLOW_ONS,
+            MAX_FORM_PRODUCTIVE_FOLLOW_ONS,
+        )
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+        exceeds = report.get("exceeds") or []
+        # Preserve tip+#24 classes + cascade path floor.
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertIn("invent_form_product_coverage", exceeds)
+        self.assertIn("invent_body_synthesize_cross_domain", exceeds)
+        self.assertIn("invent_body_synthesize_domain_complete", exceeds)
+        self.assertEqual(int(report["null"].get("probe_path_len_total") or 0), 88)
+        self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
+        self.assertEqual(int(report["null"].get("invent_count") or 0), 0)
+        self.assertEqual(int(report.get("null_invent_body_synthesize_count") or 0), 0)
+        self.assertTrue(report.get("form_exceed"))
+        # #25: CapProgram product specialty vs Null.
+        self.assertIn("invent_body_capprogram_product_coverage", exceeds)
+        self.assertGreaterEqual(
+            int(report.get("invent_body_capprogram_product_coverage_count") or 0), 1
+        )
+        self.assertEqual(
+            int(report.get("null_invent_body_capprogram_product_count") or 0), 0
+        )
+        cap_poles = report.get("invent_body_capprogram_product_poles") or []
+        self.assertTrue(cap_poles, msg=report.get("exceeds"))
+        body_syn = set(report.get("invent_body_synthesize_poles") or [])
+        for pole in cap_poles:
+            self.assertIn(pole, body_syn, msg=(pole, sorted(body_syn)))
+            self.assertFalse(
+                str(pole).startswith("ir")
+                or str(pole).startswith("more-")
+                or str(pole).startswith("more_")
+            )
+        # Soft-caps unchanged — CapProgram retarget is the #25 vehicle.
+        self.assertEqual(MAX_FORM_PRODUCTIVE_FOLLOW_ONS, 1)
+        self.assertEqual(MAX_DOMAIN_MISS_FOLLOW_ONS, 1)
+        self.assertEqual(MAX_DOMAIN_COMPLETE_FOLLOW_ONS, 1)
+        invent_count = int(report.get("invent_count") or 0)
+        self.assertGreaterEqual(invent_count, 5)
+        self.assertLess(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
         self.assertFalse(report.get("meet_only_invent"))
 
     def test_durable_invent_excludes_motif_path_shortens(self):
