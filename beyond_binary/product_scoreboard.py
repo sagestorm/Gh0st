@@ -15,6 +15,7 @@ from typing import Any
 from .center import (
     LivingCenter,
     StructuralScore,
+    MAX_DOMAIN_MISS_FOLLOW_ONS,
     MAX_FOLLOW_ON_INVENTS,
     MAX_FORM_PRODUCTIVE_FOLLOW_ONS,
 )
@@ -205,26 +206,53 @@ def _run_arm(
             # #14: ≥2 applied primary invents ⇒ iterative invent-on-think drained exceeds.
             if invent_count >= 2:
                 follow_on_invent = True
-            # #13/#18/#19 safety net: adjunct invent while durable or distinct
-            # form budget remains (usually empty after primary-path drain).
+            # #13/#18/#19/#23 safety net: adjunct invent while durable, distinct
+            # form, or domain-miss budget remains (usually empty after primary drain).
             from . import mind as mind_mod
 
-            form_follow = sum(
-                1
-                for inst in invent_instances
-                if not str(inst).startswith("rehang-")
+            # Non-rehang invents may be form or domain-miss; count form conservatively
+            # as already-spent when any non-rehang landed (primary path drained form).
+            form_follow = (
+                MAX_FORM_PRODUCTIVE_FOLLOW_ONS
+                if invent_mod.form_productive_invent_landed(path)
+                else 0
+            )
+            body_syn_domains = invent_mod.invent_body_synthesize_domains(
+                invent_mod.invent_body_synthesize_product_poles(path, eng)
+            )
+            mind_domains = invent_mod.form_product_domains(
+                invent_mod.answerable_form_product_poles(eng)
+            )
+            domain_miss_follow = (
+                MAX_DOMAIN_MISS_FOLLOW_ONS
+                if (
+                    form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS
+                    and len(mind_domains) >= 2
+                    and len(body_syn_domains) >= 2
+                )
+                else 0
             )
             for _ in range(MAX_FOLLOW_ON_INVENTS):
                 if invent_count >= MAX_FOLLOW_ON_INVENTS:
                     break
                 has_durable = invent_mod.search_has_product_exceed_candidate(eng)
+                invent_kind = "durable"
                 if has_durable:
                     pass
-                elif invent_mod.search_has_form_productive_invent_candidate(
-                    eng, mind_store=path
+                elif (
+                    invent_mod.search_has_form_productive_invent_candidate(
+                        eng, mind_store=path
+                    )
+                    and form_follow < MAX_FORM_PRODUCTIVE_FOLLOW_ONS
                 ):
-                    if form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS:
-                        break
+                    invent_kind = "form"
+                elif (
+                    invent_mod.search_has_domain_miss_invent_candidate(
+                        eng, mind_store=path
+                    )
+                    and domain_miss_follow < MAX_DOMAIN_MISS_FOLLOW_ONS
+                ):
+                    invent_kind = "domain_miss"
                 else:
                     break
                 follow = mind_mod.invent_domain(
@@ -246,8 +274,10 @@ def _run_arm(
                     invent_instance = inst
                 if prov:
                     invent_provenance = prov
-                if not has_durable:
+                if invent_kind == "form":
                     form_follow += 1
+                elif invent_kind == "domain_miss":
+                    domain_miss_follow += 1
         finally:
             if prev is None:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
@@ -464,7 +494,7 @@ def evaluate_product_exceed(
     *,
     probes: tuple[str, ...],
 ) -> tuple[bool, list[str]]:
-    """#9/#21/#22: detect strict product exceeds of search vs Null (meet-only ≠ exceed).
+    """#9/#21/#22/#23: detect strict product exceeds of search vs Null.
 
     Shared ``probes`` stay Null-frozen for cascade path/coverage fairness.
     #21 adds invent-introduced readable answerable form-product poles search has
@@ -472,6 +502,9 @@ def evaluate_product_exceed(
     (emit + poles) and from cascade path-floor keys.
     #22 adds invent-body synthesize coverage on invent-touched readable product
     poles Null lacks (mind-only / CapProgram emit / digest ``ir*`` insufficient).
+    #23 adds cross-domain invent-body synthesize when mind answers ≥2 seeded
+    domains and invent bodies synthesize ≥2 domains Null lacks (thermal-only
+    body coverage insufficient for that class).
     """
     exceeds: list[str] = []
     n_score = _score_from_dict(null_arm["score"])
@@ -522,6 +555,20 @@ def evaluate_product_exceed(
         exceeds.append("invent_body_synthesize_coverage")
         for pole in body_syn:
             exceeds.append(f"invent_body_synthesize_coverage:{pole}")
+    # #23: cross-domain invent-body synthesize — thermal-only insufficient when
+    # mind answers multi-domain form-product poles. Mind-only / digest insufficient.
+    mind_domains = invent_mod.form_product_domains(
+        search_arm.get("invent_form_product_poles") or []
+    )
+    body_domains = invent_mod.invent_body_synthesize_domains(body_syn)
+    null_body_domains = invent_mod.invent_body_synthesize_domains(
+        null_arm.get("invent_body_synthesize_poles") or []
+    )
+    cross_domains = frozenset(d for d in body_domains if d not in null_body_domains)
+    if len(mind_domains) >= 2 and len(cross_domains) >= 2:
+        exceeds.append("invent_body_synthesize_cross_domain")
+        for domain in sorted(cross_domains):
+            exceeds.append(f"invent_body_synthesize_cross_domain:{domain}")
     return bool(exceeds), exceeds
 
 
@@ -602,6 +649,20 @@ def run_scoreboard(
         body_syn_coverage_count = max(0, body_syn_coverage - (
             1 if "invent_body_synthesize_coverage" in exceeds else 0
         ))
+        body_syn_domains = sorted(
+            invent_mod.invent_body_synthesize_domains(body_syn_poles)
+        )
+        cross_domain_n = sum(
+            1
+            for e in exceeds
+            if e == "invent_body_synthesize_cross_domain"
+            or str(e).startswith("invent_body_synthesize_cross_domain:")
+        )
+        cross_domain_count = max(
+            0,
+            cross_domain_n
+            - (1 if "invent_body_synthesize_cross_domain" in exceeds else 0),
+        )
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -628,6 +689,8 @@ def run_scoreboard(
             ),
             "invent_body_synthesize_coverage_count": body_syn_coverage_count,
             "invent_body_synthesize_poles": list(body_syn_poles),
+            "invent_body_synthesize_domains": body_syn_domains,
+            "invent_body_synthesize_cross_domain_count": cross_domain_count,
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
             "invent_on_think": bool(search_arm.get("invent_on_think")),
