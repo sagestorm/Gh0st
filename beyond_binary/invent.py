@@ -19,6 +19,57 @@ from . import bodies
 from .seed import seed_custom
 
 
+def invent_touched_product_duals(
+    ast: list[dict[str, Any]] | None,
+) -> tuple[tuple[str, str], ...]:
+    """#22: readable product dual pairs referenced by an invent edit_ast.
+
+    Collects ``cause``/``effect`` and ``cause_parent``/``effect_parent`` pairs
+    that are not digest/``ir*``/``more-*`` — the invent-touched poles bodies must
+    reach for Living Center synthesize product depth.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for step in ast or []:
+        if not isinstance(step, dict):
+            continue
+        for ck, ek in (("cause", "effect"), ("cause_parent", "effect_parent")):
+            c_raw, e_raw = step.get(ck), step.get(ek)
+            if not c_raw or not e_raw:
+                continue
+            c, e = str(c_raw), str(e_raw)
+            if _is_digest_or_ir_pole(c) or _is_digest_or_ir_pole(e):
+                continue
+            key = (normalize(c), normalize(e))
+            rev = (key[1], key[0])
+            if key in seen or rev in seen:
+                continue
+            seen.add(key)
+            out.append((c, e))
+    return tuple(out)
+
+
+def bridge_invent_touched_product_poles(
+    eng: Engine,
+    ast: list[dict[str, Any]] | None,
+) -> list[tuple[str, str]]:
+    """#22: attach invent-touched readable duals so bodies answer those poles.
+
+    Adds missing duals as body-local root pairs (dual/I1-safe) without cloning
+    the full mind graph — only invent-touched readable product poles.
+    """
+    added: list[tuple[str, str]] = []
+    for c, e in invent_touched_product_duals(ast):
+        if eng.exists(c) or eng.exists(e):
+            continue
+        try:
+            eng.add_pair(c, e)
+        except Exception:  # noqa: BLE001 — skip poles that cannot dual-attach
+            continue
+        added.append((c, e))
+    return added
+
+
 def seed_body_from_search_edit(
     edit: dict[str, Any] | None,
     *,
@@ -31,6 +82,9 @@ def seed_body_from_search_edit(
     Mind-graph parents are remapped onto a body-local dual scaffold so the body
     stays dual/I1-safe while CapProgram specialty can differ by invent ops —
     not only by pole labels from seed_custom(cause, effect).
+
+    #22: after the invent-op scaffold, bridge invent-touched readable product
+    poles so cascade rehang bodies are not digest-only synthesize islands.
     """
     if not edit or edit.get("kind") != "edit_ast":
         return seed_custom(cause, effect, instance=instance)
@@ -51,6 +105,7 @@ def seed_body_from_search_edit(
         leaf_e = str(ast[0].get("effect") or effect)
         eng.add_pair(root_c, root_e)
         eng.add_pair(leaf_c, leaf_e, cause_parent=root_c, effect_parent=root_e)
+        bridge_invent_touched_product_poles(eng, ast)
         eng.assert_no_orphans()
         return torus
 
@@ -67,12 +122,15 @@ def seed_body_from_search_edit(
                 prev_c = str(ast[i - 1].get("cause") or "")
                 prev_e = str(ast[i - 1].get("effect") or "")
                 eng.add_pair(c, e, cause_parent=prev_c, effect_parent=prev_e)
+        bridge_invent_touched_product_poles(eng, ast)
         eng.assert_no_orphans()
         return torus
 
     if len(ops) == 1 and ops[0] == "rehang":
         # Distinct from wedge: two host duals under a root; leaf starts under
         # host A then migrates under host B (rehang signature).
+        # Digest scaffold preserves CapProgram rehang specialty; #22 bridges
+        # invent-touched readable poles so synthesize is not digest-only.
         root_c, root_e = f"ir{dig}rc", f"ir{dig}re"
         ha_c, ha_e = f"ir{dig}ac", f"ir{dig}ae"
         hb_c, hb_e = f"ir{dig}bc", f"ir{dig}be"
@@ -83,6 +141,7 @@ def seed_body_from_search_edit(
         eng.add_pair(leaf_c, leaf_e, cause_parent=ha_c, effect_parent=ha_e)
         eng.migrate_link(leaf_c, new_parent=hb_c)
         eng.migrate_link(leaf_e, new_parent=hb_e)
+        bridge_invent_touched_product_poles(eng, ast)
         eng.assert_no_orphans()
         return torus
 
@@ -1163,6 +1222,59 @@ def invent_introduced_form_product_poles(
             continue
         seen.add(key)
         out.append(pole)
+    return tuple(out)
+
+
+def invent_body_synthesize_product_poles(
+    mind_store: Path | str | None,
+    mind_eng: Engine | None = None,
+) -> tuple[str, ...]:
+    """#22: readable mind form-product poles answerable on ≥1 invent body.
+
+    Mind-only hits do not count. Digest/``ir*``/``more-*`` body poles are
+    rejected — only readable product poles that invent embodiment reaches.
+    """
+    if mind_store is None:
+        return ()
+    from . import store as store_mod
+    from .engine import RuleError
+
+    registry = bodies.load_registry(mind_store)
+    if not registry.bodies:
+        return ()
+    topics: tuple[str, ...]
+    if mind_eng is not None:
+        topics = answerable_form_product_poles(mind_eng)
+    else:
+        topics = ()
+    if not topics:
+        return ()
+    body_engs: list[Engine] = []
+    for rec in registry.bodies:
+        try:
+            body_engs.append(Engine(store_mod.load(rec.store_path)))
+        except Exception:  # noqa: BLE001 — skip missing/corrupt invent bodies
+            continue
+    if not body_engs:
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for topic in topics:
+        if _is_digest_or_ir_pole(topic):
+            continue
+        for beng in body_engs:
+            if not beng.exists(topic):
+                continue
+            try:
+                dual = beng.answer(topic)
+            except RuleError:
+                continue
+            if dual.cause_paths and dual.effect_paths:
+                key = normalize(topic)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(topic)
+                break
     return tuple(out)
 
 
