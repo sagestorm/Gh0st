@@ -586,10 +586,11 @@ class LivingCenter:
             last = result
             if not _applied(result):
                 return last
-            # #14/#18: drain durable exceeds, then bounded form-productive invents.
+            # #14/#18/#19: drain durable exceeds, then distinct form-productive invents.
             # Hard cap: first invent + follow-ons ≤ MAX_FOLLOW_ON_INVENTS.
             # Form budget: at most MAX_FORM_PRODUCTIVE_FOLLOW_ONS after durable empty
             # (motif ASTs regenerate forever — do not fill the soft_cap).
+            # #19: post-floor also requires new specialty class / non-trivial invent_* emit.
             form_follow = 0
             for step in range(1, MAX_FOLLOW_ON_INVENTS):
                 has_durable = invent_mod.search_has_product_exceed_candidate(
@@ -598,7 +599,7 @@ class LivingCenter:
                 if has_durable:
                     pass
                 elif invent_mod.search_has_form_productive_invent_candidate(
-                    self.engine
+                    self.engine, mind_store=self.mind_store
                 ):
                     if form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS:
                         break
@@ -627,8 +628,8 @@ class LivingCenter:
         if steps < 1:
             raise RuleError("think steps must be >= 1")
         reports = [self.cycle() for _ in range(steps)]
-        # #2/#14/#18: Prefer search invent on think(); iterate while durable
-        # exceed or form-productive invent candidates remain (bounded).
+        # #2/#14/#18/#19: Prefer search invent on think(); iterate while durable
+        # exceed or distinct form-productive invent candidates remain (bounded).
         # Null path unchanged — helper no-ops unless SearchSubstrate is active.
         # invent_and_embody body warm-up passes allow_primary_invent=False.
         if allow_primary_invent:

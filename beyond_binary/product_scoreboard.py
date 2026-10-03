@@ -119,6 +119,8 @@ def _record_invent_row(
     *,
     invent_instances: list[str],
     invent_specialties: list[str] | None = None,
+    invent_emit_keys: list[str] | None = None,
+    invent_emit_cache: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Extract applied invent metadata from invent_domain / invent_and_embody rows."""
     if not isinstance(row, dict) or row.get("invented") is False:
@@ -129,10 +131,16 @@ def _record_invent_row(
     instance = inv.get("instance")
     if instance:
         invent_instances.append(str(instance))
+    body = row.get("body") if isinstance(row.get("body"), dict) else None
     if invent_specialties is not None:
-        body = row.get("body") if isinstance(row.get("body"), dict) else None
         for name in invent_mod.invent_specialty_names_from_body(body):
             invent_specialties.append(name)
+    if invent_emit_keys is not None:
+        emits = invent_mod.invent_emit_fields_from_body(
+            body, cache=invent_emit_cache
+        )
+        for ek in emits:
+            invent_emit_keys.append(ek)
     if instance and inv.get("source") == "search":
         provenance = "search-substrate:invent"
     elif instance:
@@ -159,6 +167,8 @@ def _run_arm(
     invent_provenance = None
     invent_instances: list[str] = []
     invent_specialties: list[str] = []
+    invent_emit_keys: list[str] = []
+    invent_emit_cache: dict[str, dict[str, Any]] = {}
     invent_count = 0
     invent_on_think = False
     follow_on_invent = False
@@ -174,13 +184,15 @@ def _run_arm(
                 probes if probes is not None else invent_mod.product_probes_for(eng)
             )
             # primary_inventions non-empty ⇒ invent-on-think path exercised (#2/#11).
-            # #14/#18: think/primary path may already drain durable + form invents.
+            # #14/#18/#19: think/primary path may already drain durable + form invents.
             invent_on_think = bool(center.primary_inventions)
             for row in center.primary_inventions:
                 applied, inst, prov = _record_invent_row(
                     row if isinstance(row, dict) else None,
                     invent_instances=invent_instances,
                     invent_specialties=invent_specialties,
+                    invent_emit_keys=invent_emit_keys,
+                    invent_emit_cache=invent_emit_cache,
                 )
                 if not applied:
                     continue
@@ -193,8 +205,8 @@ def _run_arm(
             # #14: ≥2 applied primary invents ⇒ iterative invent-on-think drained exceeds.
             if invent_count >= 2:
                 follow_on_invent = True
-            # #13/#18 safety net: adjunct invent while durable or form budget remains
-            # (usually empty after primary-path drain).
+            # #13/#18/#19 safety net: adjunct invent while durable or distinct
+            # form budget remains (usually empty after primary-path drain).
             from . import mind as mind_mod
 
             form_follow = sum(
@@ -208,7 +220,9 @@ def _run_arm(
                 has_durable = invent_mod.search_has_product_exceed_candidate(eng)
                 if has_durable:
                     pass
-                elif invent_mod.search_has_form_productive_invent_candidate(eng):
+                elif invent_mod.search_has_form_productive_invent_candidate(
+                    eng, mind_store=path
+                ):
                     if form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS:
                         break
                 else:
@@ -220,6 +234,8 @@ def _run_arm(
                     follow if isinstance(follow, dict) else None,
                     invent_instances=invent_instances,
                     invent_specialties=invent_specialties,
+                    invent_emit_keys=invent_emit_keys,
+                    invent_emit_cache=invent_emit_cache,
                 )
                 if not applied:
                     break
@@ -254,6 +270,8 @@ def _run_arm(
                     row if isinstance(row, dict) else None,
                     invent_instances=invent_instances,
                     invent_specialties=invent_specialties,
+                    invent_emit_keys=invent_emit_keys,
+                    invent_emit_cache=invent_emit_cache,
                 )
                 if not applied:
                     continue
@@ -281,6 +299,9 @@ def _run_arm(
     snap["invent_instances"] = list(invent_instances)
     snap["invent_specialties"] = list(invent_specialties)
     snap["invent_specialty_count"] = len(invent_specialties)
+    # #19: unique invent_* emit keys (behavioral form evidence).
+    snap["invent_emit_keys"] = sorted(set(invent_emit_keys))
+    snap["invent_emit_count"] = len(set(invent_emit_keys))
     snap["invent_on_think"] = invent_on_think
     snap["follow_on_invent"] = follow_on_invent
     snap["substrate"] = "search" if use_search else "null"
@@ -388,10 +409,12 @@ def evaluate_form_exceed(
     null_arm: dict[str, Any],
     search_arm: dict[str, Any],
 ) -> tuple[bool, int, int]:
-    """#18: invent→form product exceed — search invent specialties vs Null none.
+    """#19: invent→form behavioral exceed — invent_* emits on search, none on Null.
 
-    Counts only ``prim_invent_*`` with origin=search-invent. Bare ``prim_search_*``
-    evolve noise does not count.
+    Specialty **name** counts remain adjuncts (returned as search/null form_n).
+    Form exceed requires ≥1 invent_* emit key from interpreting invent bodies on
+    search and zero invent bodies / invent_* emits on Null. Bare ``prim_search_*``
+    evolve noise and name presence alone do not count.
     """
 
     def _specialty_count(arm: dict[str, Any]) -> int:
@@ -400,9 +423,17 @@ def evaluate_form_exceed(
         specs = arm.get("invent_specialties") or []
         return len(specs) if isinstance(specs, list) else 0
 
+    def _emit_count(arm: dict[str, Any]) -> int:
+        if "invent_emit_count" in arm:
+            return int(arm.get("invent_emit_count") or 0)
+        keys = arm.get("invent_emit_keys") or []
+        return len(set(keys)) if isinstance(keys, list) else 0
+
     s_count = _specialty_count(search_arm)
     n_count = _specialty_count(null_arm)
-    return (s_count >= 1 and n_count == 0), s_count, n_count
+    s_emits = _emit_count(search_arm)
+    n_emits = _emit_count(null_arm)
+    return (s_emits >= 1 and n_emits == 0), s_count, n_count
 
 
 def evaluate_product_exceed(
@@ -492,6 +523,8 @@ def run_scoreboard(
         # Drop bulky name lists from default report (kept for debugging via flag).
         null_public = {k: v for k, v in null_arm.items() if k != "node_names"}
         search_public = {k: v for k, v in search_arm.items() if k != "node_names"}
+        search_emit_n = int(search_arm.get("invent_emit_count") or 0)
+        null_emit_n = int(null_arm.get("invent_emit_count") or 0)
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -499,6 +532,8 @@ def run_scoreboard(
             "form_exceed": form_exceed,
             "invent_specialty_count": search_form_n,
             "null_invent_specialty_count": null_form_n,
+            "invent_emit_count": search_emit_n,
+            "null_invent_emit_count": null_emit_n,
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
             "invent_on_think": bool(search_arm.get("invent_on_think")),
@@ -517,11 +552,12 @@ def run_scoreboard(
                 "or undomain poles must not appear on typed probe answer paths; "
                 "probe path lengths must not exceed Null; search arm exercises "
                 "invent-on-think (primary-path iterative invent while durable "
-                "product-exceed or form-productive invent candidates remain, "
+                "product-exceed or distinct form-productive invent candidates remain, "
                 "bounded; path-shorten / structural preferred over path-neutral "
-                "motif coverage; form-productive invents continue past path-floor; "
+                "motif coverage; post-floor invent earns new specialty class and/or "
+                "non-trivial invent_* emit — not dual_attach clone floods; "
                 "scoreboard adjunct safety-net) and reports cumulative "
-                "product_exceed / form_exceed vs meet_only_invent"
+                "product_exceed / behavioral form_exceed vs meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "
