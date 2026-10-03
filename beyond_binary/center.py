@@ -28,6 +28,10 @@ MAX_FOLLOW_ON_INVENTS = 8
 # (prim_invent_* / origin=search-invent). Prevents motif soft_cap flood while
 # restoring invent_count≥3 + form_exceed. Total still ≤ MAX_FOLLOW_ON_INVENTS.
 MAX_FORM_PRODUCTIVE_FOLLOW_ONS = 1
+# #23: after form budget, at most this many domain-opening invents that
+# invent-touch under-covered same-center domains (mind answers, invent bodies
+# do not synthesize). Distinct from raising MAX_FORM_PRODUCTIVE_FOLLOW_ONS.
+MAX_DOMAIN_MISS_FOLLOW_ONS = 1
 
 
 @dataclass
@@ -586,23 +590,37 @@ class LivingCenter:
             last = result
             if not _applied(result):
                 return last
-            # #14/#18/#19: drain durable exceeds, then distinct form-productive invents.
+            # #14/#18/#19/#23: drain durable exceeds, then distinct form-productive
+            # invents, then domain-miss invents for under-covered same-center domains.
             # Hard cap: first invent + follow-ons ≤ MAX_FOLLOW_ON_INVENTS.
             # Form budget: at most MAX_FORM_PRODUCTIVE_FOLLOW_ONS after durable empty
             # (motif ASTs regenerate forever — do not fill the soft_cap).
+            # Domain-miss budget: MAX_DOMAIN_MISS_FOLLOW_ONS after form budget —
+            # does not raise the form soft-cap.
             # #19: post-floor also requires new specialty class / non-trivial invent_* emit.
             form_follow = 0
+            domain_miss_follow = 0
             for step in range(1, MAX_FOLLOW_ON_INVENTS):
                 has_durable = invent_mod.search_has_product_exceed_candidate(
                     self.engine
                 )
+                invent_kind = "durable"
                 if has_durable:
                     pass
-                elif invent_mod.search_has_form_productive_invent_candidate(
-                    self.engine, mind_store=self.mind_store
+                elif (
+                    invent_mod.search_has_form_productive_invent_candidate(
+                        self.engine, mind_store=self.mind_store
+                    )
+                    and form_follow < MAX_FORM_PRODUCTIVE_FOLLOW_ONS
                 ):
-                    if form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS:
-                        break
+                    invent_kind = "form"
+                elif (
+                    invent_mod.search_has_domain_miss_invent_candidate(
+                        self.engine, mind_store=self.mind_store
+                    )
+                    and domain_miss_follow < MAX_DOMAIN_MISS_FOLLOW_ONS
+                ):
+                    invent_kind = "domain_miss"
                 else:
                     break
                 follow = mind_mod.invent_domain(
@@ -616,8 +634,10 @@ class LivingCenter:
                 last = follow
                 if not _applied(follow):
                     break
-                if not has_durable:
+                if invent_kind == "form":
                     form_follow += 1
+                elif invent_kind == "domain_miss":
+                    domain_miss_follow += 1
         finally:
             _PRIMARY_PATH_INVENT_DEPTH -= 1
         return last
