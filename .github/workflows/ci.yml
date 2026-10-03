@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Full suite locally ~14m units + verify; cap hung/runaway jobs without
+    # skipping product honesty gates (see internal/ci-unit-slowdown.md).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -17,9 +20,11 @@ jobs:
           python-version: "3.12"
 
       - name: Unit tests
+        timeout-minutes: 40
         run: python3 -m unittest discover -s beyond_binary/tests -v
 
       - name: verify-far-vision (default / Null fail-closed)
+        timeout-minutes: 15
         run: |
           set +e
           python3 -m beyond_binary verify-far-vision > /tmp/verify-default.json
@@ -54,6 +59,7 @@ jobs:
           echo "OK default: eng=true SENTIENCE=false complete=false exit=2"
 
       - name: verify-far-vision (search substrate)
+        timeout-minutes: 15
         env:
           BEYOND_BINARY_SUBSTRATE: search
         run: |
