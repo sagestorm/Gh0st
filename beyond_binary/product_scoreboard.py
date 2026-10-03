@@ -306,6 +306,12 @@ def _run_arm(
     form_poles = list(invent_mod.answerable_form_product_poles(eng))
     snap["invent_form_product_poles"] = form_poles
     snap["invent_form_product_count"] = len(form_poles)
+    # #22: invent-body synthesize product poles (mind+bodies depth; not mind-only).
+    body_syn_poles = list(
+        invent_mod.invent_body_synthesize_product_poles(path, eng)
+    )
+    snap["invent_body_synthesize_poles"] = body_syn_poles
+    snap["invent_body_synthesize_count"] = len(body_syn_poles)
     snap["invent_on_think"] = invent_on_think
     snap["follow_on_invent"] = follow_on_invent
     snap["substrate"] = "search" if use_search else "null"
@@ -458,12 +464,14 @@ def evaluate_product_exceed(
     *,
     probes: tuple[str, ...],
 ) -> tuple[bool, list[str]]:
-    """#9/#21: detect strict product exceeds of search vs Null (meet-only ≠ exceed).
+    """#9/#21/#22: detect strict product exceeds of search vs Null (meet-only ≠ exceed).
 
     Shared ``probes`` stay Null-frozen for cascade path/coverage fairness.
     #21 adds invent-introduced readable answerable form-product poles search has
     / Null lacks as ``invent_form_product_coverage`` — distinct from form_exceed
     (emit + poles) and from cascade path-floor keys.
+    #22 adds invent-body synthesize coverage on invent-touched readable product
+    poles Null lacks (mind-only / CapProgram emit / digest ``ir*`` insufficient).
     """
     exceeds: list[str] = []
     n_score = _score_from_dict(null_arm["score"])
@@ -504,6 +512,16 @@ def evaluate_product_exceed(
         exceeds.append("invent_form_product_coverage")
         for pole in introduced:
             exceeds.append(f"invent_form_product_coverage:{pole}")
+    # #22: mind+bodies synthesize product — invent-body hits Null lacks.
+    # Mind-only / emit-only / digest-ir body answers do not earn this class.
+    body_syn = invent_mod.invent_introduced_form_product_poles(
+        search_arm.get("invent_body_synthesize_poles") or [],
+        null_arm.get("invent_body_synthesize_poles") or [],
+    )
+    if body_syn:
+        exceeds.append("invent_body_synthesize_coverage")
+        for pole in body_syn:
+            exceeds.append(f"invent_body_synthesize_coverage:{pole}")
     return bool(exceeds), exceeds
 
 
@@ -571,6 +589,19 @@ def run_scoreboard(
         form_product_coverage_count = max(0, form_product_coverage - (
             1 if "invent_form_product_coverage" in exceeds else 0
         ))
+        body_syn_poles = invent_mod.invent_introduced_form_product_poles(
+            search_arm.get("invent_body_synthesize_poles") or [],
+            null_arm.get("invent_body_synthesize_poles") or [],
+        )
+        body_syn_coverage = sum(
+            1
+            for e in exceeds
+            if e == "invent_body_synthesize_coverage"
+            or str(e).startswith("invent_body_synthesize_coverage:")
+        )
+        body_syn_coverage_count = max(0, body_syn_coverage - (
+            1 if "invent_body_synthesize_coverage" in exceeds else 0
+        ))
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -589,6 +620,14 @@ def run_scoreboard(
             "invent_introduced_form_product_count": len(introduced_poles),
             "invent_introduced_form_product_poles": list(introduced_poles),
             "invent_form_product_coverage_count": form_product_coverage_count,
+            "invent_body_synthesize_count": len(
+                search_arm.get("invent_body_synthesize_poles") or []
+            ),
+            "null_invent_body_synthesize_count": len(
+                null_arm.get("invent_body_synthesize_poles") or []
+            ),
+            "invent_body_synthesize_coverage_count": body_syn_coverage_count,
+            "invent_body_synthesize_poles": list(body_syn_poles),
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
             "invent_on_think": bool(search_arm.get("invent_on_think")),

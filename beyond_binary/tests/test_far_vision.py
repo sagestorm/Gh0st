@@ -2317,6 +2317,14 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertGreaterEqual(
                 int(report.get("invent_form_product_coverage_count") or 0), 1
             )
+            # #22: invent-body synthesize product class vs Null.
+            self.assertIn("invent_body_synthesize_coverage", exceeds)
+            self.assertGreaterEqual(
+                int(report.get("invent_body_synthesize_coverage_count") or 0), 1
+            )
+            self.assertEqual(
+                int(report.get("null_invent_body_synthesize_count") or 0), 0
+            )
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2347,6 +2355,7 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("null_invent_emit_count=", ev)
             self.assertIn("invent_introduced_form_product_count=", ev)
             self.assertIn("invent_form_product_coverage_count=", ev)
+            self.assertIn("invent_body_synthesize_coverage_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2363,6 +2372,13 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_form_product_coverage", board.get("exceeds") or [])
             self.assertGreaterEqual(
                 int(board.get("invent_form_product_coverage_count") or 0), 1
+            )
+            self.assertIn("invent_body_synthesize_coverage", board.get("exceeds") or [])
+            self.assertGreaterEqual(
+                int(board.get("invent_body_synthesize_coverage_count") or 0), 1
+            )
+            self.assertEqual(
+                int(board.get("null_invent_body_synthesize_count") or 0), 0
             )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
@@ -2631,6 +2647,27 @@ class ProductiveInventTests(unittest.TestCase):
         self.assertGreaterEqual(
             int(report.get("invent_form_product_coverage_count") or 0), 1
         )
+        # #22: invent-body synthesize product depth vs Null (not mind-only / digest).
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertTrue(
+            any(str(e).startswith("invent_body_synthesize_coverage:") for e in exceeds),
+            msg=exceeds,
+        )
+        self.assertGreaterEqual(
+            int(report.get("invent_body_synthesize_coverage_count") or 0), 1
+        )
+        body_syn = report.get("invent_body_synthesize_poles") or []
+        self.assertTrue(body_syn, msg=body_syn)
+        self.assertFalse(
+            any(
+                str(p).startswith("ir")
+                or str(p).startswith("more-")
+                or str(p).startswith("more_")
+                for p in body_syn
+            ),
+            msg=body_syn,
+        )
+        self.assertEqual(int(report.get("null_invent_body_synthesize_count") or 0), 0)
         # Null arm has zero invent-form product coverage class.
         null_form_poles = report["null"].get("invent_form_product_poles") or []
         self.assertFalse(
@@ -2739,6 +2776,135 @@ class ProductiveInventTests(unittest.TestCase):
         )
         self.assertFalse(exceeded2)
         self.assertNotIn("invent_form_product_coverage", exceeds2)
+
+    def test_rehang_body_answers_invent_touched_product_poles(self):
+        """#22: rehang invent bodies reach shared readable poles, not digest-only."""
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import capability as capability_mod
+
+        edit = {
+            "kind": "edit_ast",
+            "ast": [
+                {
+                    "op": "rehang",
+                    "cause": "ice",
+                    "effect": "thaw",
+                    "cause_parent": "hot",
+                    "effect_parent": "cold",
+                }
+            ],
+        }
+        duals = invent_mod.invent_touched_product_duals(edit["ast"])
+        self.assertIn(("ice", "thaw"), duals)
+        self.assertIn(("hot", "cold"), duals)
+        torus = invent_mod.seed_body_from_search_edit(
+            edit, instance="rehang-body22", cause="ice", effect="thaw"
+        )
+        eng = Engine(torus)
+        eng.assert_no_orphans()
+        for topic in ("ice", "thaw", "hot", "cold"):
+            dual = eng.answer(topic)
+            self.assertTrue(dual.cause_paths and dual.effect_paths, msg=topic)
+        # Digest scaffold remains (rehang specialty signature) alongside bridges.
+        self.assertTrue(any(str(n).startswith("ir") for n in eng.torus.nodes))
+        prog = capability_mod.initial_program_for(eng, "body-rehang22")
+        prog = capability_mod.evolve_program(prog, eng)
+        prog = capability_mod.couple_program_to_invent_edit(prog, eng, edit)
+        self.assertIn("prim_invent_rehang_shift", prog.primitives)
+        out = capability_mod.interpret(prog, eng)
+        self.assertIn("invent_rehang_shift", out.get("result") or {})
+
+    def test_product_exceed_credits_invent_body_synthesize_coverage(self):
+        """#22: invent-body synthesize hits Null lacks earn a product_exceed class."""
+        from beyond_binary import product_scoreboard as sb
+
+        base_score = {
+            "dual_coverage": 1.0,
+            "link_symmetry": 1.0,
+            "unused_path_cost": 0.0,
+            "node_count": 10,
+        }
+        null_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": ["water", "ice"],
+            "invent_body_synthesize_poles": [],
+            "invent_emit_count": 0,
+        }
+        search_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": ["water", "ice"],
+            "invent_body_synthesize_poles": ["water", "ice", "hot"],
+            "invent_emit_count": 1,
+        }
+        exceeded, exceeds = sb.evaluate_product_exceed(
+            null_arm, search_arm, probes=("water",)
+        )
+        self.assertTrue(exceeded)
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertIn("invent_body_synthesize_coverage:water", exceeds)
+        self.assertIn("invent_body_synthesize_coverage:ice", exceeds)
+        # Mind-only / emit-only without body synthesize poles is insufficient.
+        mind_only = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": ["water", "ice", "humid"],
+            "invent_body_synthesize_poles": [],
+            "invent_emit_count": 2,
+        }
+        exceeded2, exceeds2 = sb.evaluate_product_exceed(
+            null_arm, mind_only, probes=("water",)
+        )
+        self.assertTrue(exceeded2)  # invent_form_product_coverage still fires
+        self.assertNotIn("invent_body_synthesize_coverage", exceeds2)
+        # Digest-like body poles do not earn the class.
+        digest_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": ["water", "ice"],
+            "invent_body_synthesize_poles": ["irdeadbeeflc", "more-irdeadbeeflc"],
+            "invent_emit_count": 1,
+        }
+        exceeded3, exceeds3 = sb.evaluate_product_exceed(
+            null_arm, digest_arm, probes=("water",)
+        )
+        self.assertNotIn("invent_body_synthesize_coverage", exceeds3)
+
+    def test_scoreboard_invent_body_shared_pole_synthesize(self):
+        """#22: scoreboard credits mind+bodies synthesize; rehang bodies not 0/N."""
+        from beyond_binary import product_scoreboard as sb
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+        exceeds = report.get("exceeds") or []
+        self.assertIn("invent_body_synthesize_coverage", exceeds)
+        self.assertGreaterEqual(
+            int(report.get("invent_body_synthesize_coverage_count") or 0), 1
+        )
+        self.assertEqual(int(report.get("null_invent_body_synthesize_count") or 0), 0)
+        # Preserve #21 classes + cascade path floor.
+        self.assertIn("invent_form_product_coverage", exceeds)
+        self.assertEqual(int(report["null"].get("probe_path_len_total") or 0), 88)
+        self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
+        self.assertEqual(int(report["null"].get("invent_count") or 0), 0)
+        self.assertTrue(report.get("form_exceed"))
+        # Invent bodies answer invent-touched shared cascade poles (not digest-only).
+        body_syn = report.get("invent_body_synthesize_poles") or []
+        shared = {"water", "condensation", "ice", "thaw", "hot", "cold"}
+        self.assertTrue(
+            shared.intersection({normalize(p) for p in body_syn}),
+            msg=body_syn,
+        )
+        # Soft-cap unchanged — no dual_attach flood vehicle.
+        invent_count = int(report.get("invent_count") or 0)
+        self.assertGreaterEqual(invent_count, 3)
+        self.assertLess(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
 
     def test_durable_invent_excludes_motif_path_shortens(self):
         """#21: invent-motif path-shortens are not pre-floor cascade durable fuel."""
