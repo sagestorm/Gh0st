@@ -313,9 +313,11 @@ class GenerativeGrowthTests(unittest.TestCase):
             mind_path = Path(tmp) / "mind.json"
             store.save(eng.torus, mind_path)
             center.mind_store = mind_path
-            center.max_nodes_soft_cap = 40
+            # #16: ice/thaw nest + aliases need more headroom past lexicon fill
+            # before synonym/generative can fire under soft_cap pressure.
+            center.max_nodes_soft_cap = 64
             # Lexicon → synonym cascade → more-* leaf generative.
-            reports = center.think(20)
+            reports = center.think(28)
             names = set(eng.torus.nodes)
             sources = [
                 a.detail.get("source")
@@ -326,7 +328,8 @@ class GenerativeGrowthTests(unittest.TestCase):
             beyond = {"synonym", "generative"} & set(sources)
             self.assertTrue(
                 beyond,
-                f"expected synonym or generative growth, got {sorted(set(sources))}",
+                "expected synonym or generative growth, got "
+                f"{sorted(s for s in set(sources) if s is not None)}",
             )
             self.assertTrue(
                 any(n.startswith("more-") for n in names)
