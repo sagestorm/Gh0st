@@ -1750,14 +1750,14 @@ class DomainCoherentInventTests(unittest.TestCase):
         )
 
     def test_trial_allows_meet_only_when_no_exceed_remains(self):
-        """#10: path-neutral meet invent applies only after no exceed remains (C4)."""
+        """#10/#15: path-neutral meet invent applies only after durable exceed gone."""
         from beyond_binary.seed import seed_same_center
         from beyond_binary import invent as invent_mod
         from beyond_binary import search_substrate as search_mod
 
         eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
         LivingCenter(eng).think(6)
-        # Consume every remaining product-exceed candidate (rehang + motif coverage).
+        # Consume every remaining durable product-exceed candidate (path/structural).
         for _ in range(20):
             if not invent_mod.search_has_product_exceed_candidate(eng):
                 break
@@ -1765,7 +1765,7 @@ class DomainCoherentInventTests(unittest.TestCase):
             self.assertTrue(rows)
             self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
         self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
-        # Undomain structural dual: path-neutral meet after typed motif exceeds are gone.
+        # Undomain structural dual: path-neutral meet after durable exceeds are gone.
         edit = {
             "kind": "edit_ast",
             "ast": [
@@ -2212,53 +2212,81 @@ class ProductiveInventTests(unittest.TestCase):
                 )
 
     def test_scoreboard_follow_on_invent_only_when_exceed_remains(self):
-        """#11/#12/#13/#14: scoreboard invent_count honest when iterative invent fires."""
+        """#11/#14/#15: scoreboard invent_count honest when iterative invent fires."""
         from beyond_binary import product_scoreboard as sb
 
         report = sb.run_scoreboard()
         self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
         self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
         if report["search"].get("invent_applied") and report.get("product_exceed"):
+            self.assertFalse(report.get("meet_only_invent"))
+            self.assertGreaterEqual(int(report.get("invent_count") or 0), 1)
             if report.get("follow_on_invent"):
-                self.assertGreaterEqual(int(report.get("invent_count") or 0), 3)
+                self.assertGreaterEqual(int(report.get("invent_count") or 0), 2)
                 self.assertGreaterEqual(
-                    len(report["search"].get("invent_instances") or []), 3
+                    len(report["search"].get("invent_instances") or []), 2
                 )
-                self.assertFalse(report.get("meet_only_invent"))
-            else:
-                self.assertEqual(int(report.get("invent_count") or 0), 1)
-                self.assertFalse(report["search"].get("follow_on_invent"))
 
     def test_scoreboard_iterates_follow_on_until_exceed_pool_empty(self):
-        """#13/#14: scoreboard reports drained exceed pool (invent_count ≥3)."""
+        """#14/#15: after durable invent drain, product_exceed holds (not meet-only)."""
         from beyond_binary import product_scoreboard as sb
+        from beyond_binary import invent as invent_mod
 
         report = sb.run_scoreboard()
         self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
         self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
-        self.assertTrue(report.get("follow_on_invent"))
         invent_count = int(report.get("invent_count") or 0)
-        self.assertGreaterEqual(invent_count, 3)
+        self.assertGreaterEqual(invent_count, 1)
         self.assertLessEqual(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
         self.assertEqual(
             invent_count, len(report["search"].get("invent_instances") or [])
         )
-        self.assertTrue(report.get("product_exceed"))
+        # #15: durable path/structural exceed must survive the invent drain.
+        self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
         self.assertFalse(report.get("meet_only_invent"))
+        self.assertTrue(
+            any(
+                e == "probe_path_len_total"
+                or e == "structural_score"
+                or str(e).startswith("probe_path_shorter:")
+                for e in (report.get("exceeds") or [])
+            ),
+            msg=report.get("exceeds"),
+        )
+        instances = report["search"].get("invent_instances") or []
+        self.assertTrue(
+            any(str(i).startswith("rehang-") for i in instances),
+            msg=instances,
+        )
+        # Motif-only coverage must not dominate the drained invent set.
+        self.assertFalse(
+            all(str(i).startswith("search-add-") for i in instances),
+            msg=instances,
+        )
+        _ = invent_mod
 
     def test_primary_path_iterates_exceed_invent_until_pool_empty(self):
-        """#14: LivingCenter.think drains product-exceed invents (bounded)."""
+        """#14/#15: think drains durable exceeds; product_exceed vs Null survives."""
         import os
         import tempfile
         from pathlib import Path
         from beyond_binary.seed import seed_same_center
         from beyond_binary import invent as invent_mod
+        from beyond_binary import product_scoreboard as sb
         from beyond_binary import store
         from beyond_binary import substrate as substrate_mod
         from beyond_binary.center import MAX_FOLLOW_ON_INVENTS
 
         with tempfile.TemporaryDirectory() as tmp:
             mind = Path(tmp) / "mind.json"
+            null_eng = Engine(
+                seed_same_center(("thermal", "ontology", "optical"), minimal=True)
+            )
+            store.save(null_eng.torus, Path(tmp) / "null.json")
+            LivingCenter(null_eng).think(6, allow_primary_invent=False)
+            null_probes = invent_mod.product_probes_for(null_eng)
+            null_snap = sb._snapshot(null_eng, null_probes)
+
             eng = Engine(
                 seed_same_center(("thermal", "ontology", "optical"), minimal=True)
             )
@@ -2276,20 +2304,75 @@ class ProductiveInventTests(unittest.TestCase):
                     and r.get("invented") is not False
                     and isinstance(r.get("invention"), dict)
                 ]
-                self.assertGreaterEqual(len(applied), 3)
+                self.assertGreaterEqual(len(applied), 1)
                 self.assertLessEqual(len(applied), MAX_FOLLOW_ON_INVENTS)
                 instances = [
                     str((r.get("invention") or {}).get("instance") or "")
                     for r in applied
                 ]
-                self.assertTrue(any(i.startswith("rehang-") for i in instances), msg=instances)
                 self.assertTrue(
-                    any(i.startswith("search-add-") for i in instances), msg=instances
+                    any(i.startswith("rehang-") for i in instances), msg=instances
                 )
+                # #15: durable pool empty — coverage-only motifs do not keep it open.
                 self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
+                search_snap = sb._snapshot(eng, null_probes)
+                pe, exceeds = sb.evaluate_product_exceed(
+                    null_snap, search_snap, probes=null_probes
+                )
+                self.assertTrue(pe, msg=exceeds)
+                self.assertTrue(
+                    any(
+                        e == "probe_path_len_total"
+                        or e.startswith("probe_path_shorter:")
+                        or e == "structural_score"
+                        for e in exceeds
+                    ),
+                    msg=exceeds,
+                )
             finally:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
                 substrate_mod.reset_logs_for_tests()
+
+    def test_durable_exceed_preferred_over_motif_coverage_burn(self):
+        """#15: invent pool prefers path/structural; motif coverage is not durable fuel."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import search_substrate as search_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6, allow_primary_invent=False)
+        pre = LivingCenter(eng).score()
+        rows = search_mod.search_invent_asts(eng, limit=6)
+        self.assertTrue(rows)
+        # While durable rehangs exist, search must not emit coverage-only adds.
+        for row in rows:
+            trial = search_mod._clone_engine(eng)
+            self.assertTrue(search_mod.apply_edit_ast(trial, row["ast"]))
+            post = LivingCenter(trial).score()
+            reasons = invent_mod.product_exceed_reasons(eng, trial, pre, post)
+            self.assertTrue(
+                invent_mod.durable_product_exceed_reasons(reasons),
+                msg=f"{row.get('instance')}: {reasons}",
+            )
+            self.assertTrue(
+                str(row.get("instance", "")).startswith("rehang-"),
+                msg=row.get("instance"),
+            )
+        # Apply one durable invent → durable pool empties; motifs become meet fallback.
+        self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
+        self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
+        fallback = search_mod.search_invent_asts(eng, limit=3)
+        self.assertTrue(fallback)
+        # Fallback may be motif coverage or other meet-only — not durable exceed.
+        f0 = fallback[0]
+        pre2 = LivingCenter(eng).score()
+        trial = search_mod._clone_engine(eng)
+        self.assertTrue(search_mod.apply_edit_ast(trial, f0["ast"]))
+        post = LivingCenter(trial).score()
+        reasons = invent_mod.product_exceed_reasons(eng, trial, pre2, post)
+        self.assertFalse(
+            invent_mod.durable_product_exceed_reasons(reasons), msg=reasons
+        )
 
     def test_motif_add_dual_exceeds_after_invent_on_think(self):
         """#12: typed invent-motif dual earns usable_probe_coverage after path invent."""

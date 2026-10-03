@@ -393,8 +393,9 @@ def search_invent_asts(
     unused poles, invent motifs). Digests may appear only in instance ids.
     Proposals with sw/sc digest poles are never emitted.
 
-    #9: prefer candidates that earn ≥1 product exceed (path shorten, structural
-    improve, or usable probe coverage) over meet-only path-neutral leaves.
+    #9/#15: prefer durable product exceeds (path shorten / structural) over
+    # meet-only leaves. Motif usable_probe_coverage alone is path-neutral vs Null
+    # and must not occupy the productive invent pool (#15 durable exceed).
     """
     used = {normalize(x) for x in (used_instances or ())}
     reserved: set[str] = set()
@@ -435,7 +436,11 @@ def search_invent_asts(
     def _classify(row: dict[str, Any], trial_eng: Engine) -> None:
         used.add(normalize(row["instance"]))
         post_score = LivingCenter(trial_eng).score()
-        if invent_mod.product_exceed_reasons(eng, trial_eng, pre_score, post_score):
+        reasons = invent_mod.product_exceed_reasons(
+            eng, trial_eng, pre_score, post_score
+        )
+        # #15: only durable exceeds feed the productive / drain pool.
+        if invent_mod.durable_product_exceed_reasons(reasons):
             if len(productive) < productive_cap:
                 productive.append(row)
         elif len(other) < other_cap:
@@ -485,7 +490,11 @@ def search_invent_asts(
             if not apply_edit_ast(trial, ast):
                 continue
             post_score = LivingCenter(trial).score()
-            if not invent_mod.product_exceed_reasons(eng, trial, pre_score, post_score):
+            reasons = invent_mod.product_exceed_reasons(
+                eng, trial, pre_score, post_score
+            )
+            # #15: rehangs must earn durable path/structural exceed, not coverage alone.
+            if not invent_mod.durable_product_exceed_reasons(reasons):
                 continue
             productive.append(
                 {
@@ -719,9 +728,10 @@ def search_invent_asts(
                 reserved.add(normalize(leaf_c))
                 reserved.add(normalize(leaf_e))
 
-    # #9/#10: when ≥1 product exceed exists, emit only exceeds — do not mix
-    # meet-only into the same batch. Path-neutral meet is the fallback only
-    # when the productive pool is empty (C4 invent_domain must not starve).
+    # #9/#10/#15: when ≥1 durable product exceed exists, emit only those —
+    # do not mix coverage-only / meet-only into the same batch. Path-neutral
+    # motif coverage and other meet leaves are the fallback only when the
+    # durable productive pool is empty (C4 invent_domain must not starve).
     if productive:
         return productive[:limit]
     return other[:limit]

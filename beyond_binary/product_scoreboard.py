@@ -429,10 +429,11 @@ def run_scoreboard(
                 "be zero; probe answerability must not regress; typed cross-domain "
                 "or undomain poles must not appear on typed probe answer paths; "
                 "probe path lengths must not exceed Null; search arm exercises "
-                "invent-on-think (primary-path iterative invent while exceed "
-                "candidates remain, bounded, including invent-motif usable coverage "
-                "after cascade fill; scoreboard adjunct safety-net) and reports "
-                "cumulative product_exceed vs meet_only_invent"
+                "invent-on-think (primary-path iterative invent while durable "
+                "product-exceed candidates remain, bounded; path-shorten / "
+                "structural preferred over path-neutral motif coverage; "
+                "scoreboard adjunct safety-net) and reports cumulative "
+                "product_exceed vs meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "
