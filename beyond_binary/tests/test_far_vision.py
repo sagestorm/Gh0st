@@ -2100,7 +2100,12 @@ class ProductiveInventTests(unittest.TestCase):
             )
             store.save(eng.torus, mind)
             LivingCenter(eng).think(6, allow_primary_invent=False)
-            before = invent_mod._probe_answer_path_len(eng, "water")
+            # #16: first durable invent may shorten ice (nested) before water.
+            before_paths = {
+                topic: invent_mod._probe_answer_path_len(eng, topic)
+                for topic in ("water", "ice", "condensation", "thaw")
+                if eng.exists(topic)
+            }
             os.environ[substrate_mod.ENV_FLAG] = "search"
             try:
                 substrate_mod.reset_logs_for_tests()
@@ -2116,10 +2121,13 @@ class ProductiveInventTests(unittest.TestCase):
                 or "rehang" in str(inv.get("why", "")),
                 msg=inv,
             )
-            after = invent_mod._probe_answer_path_len(eng, "water")
-            self.assertIsNotNone(before)
-            self.assertIsNotNone(after)
-            self.assertLess(int(after), int(before))
+            shortened = False
+            for topic, before in before_paths.items():
+                after = invent_mod._probe_answer_path_len(eng, topic)
+                if before is not None and after is not None and int(after) < int(before):
+                    shortened = True
+                    break
+            self.assertTrue(shortened, msg=f"before={before_paths} inv={inv}")
 
     def test_scoreboard_detects_meet_only_invent(self):
         from beyond_binary import product_scoreboard as sb
@@ -2468,29 +2476,19 @@ class ProductiveInventTests(unittest.TestCase):
             os.environ[substrate_mod.ENV_FLAG] = "search"
             try:
                 substrate_mod.reset_logs_for_tests()
-                # Apply productive rehang only (pre-#14 single invent) so motif
-                # coverage exceed is measurable without draining the pool first.
+                # #15/#16: drain durable path invents first so motif coverage is
+                # measurable as meet/coverage fallback (not blocked by exceed pool).
                 LivingCenter(eng).think(6, allow_primary_invent=False)
-                water = eng.torus.nodes["water"]
-                opp = eng.torus.nodes[water.opposite]
-                rehang = {
-                    "kind": "edit_ast",
-                    "ast": [
-                        {
-                            "op": "rehang",
-                            "cause": water.name,
-                            "effect": opp.name,
-                            "cause_parent": "hot",
-                            "effect_parent": "cold",
-                        }
-                    ],
-                    "cause": water.name,
-                    "effect": opp.name,
-                    "instance": "rehang-test-motif",
-                }
-                ok, _, _, reason = invent_mod._trial_search_edit(eng, rehang)
-                self.assertTrue(ok, msg=reason)
-                self.assertTrue(search_mod.apply_edit_ast(eng, rehang["ast"]))
+                drained = 0
+                while invent_mod.search_has_product_exceed_candidate(eng):
+                    rows = search_mod.search_invent_asts(eng, limit=4)
+                    self.assertTrue(rows)
+                    ok, _, _, reason = invent_mod._trial_search_edit(eng, rows[0])
+                    self.assertTrue(ok, msg=reason)
+                    self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
+                    drained += 1
+                    self.assertLessEqual(drained, 8)
+                self.assertGreaterEqual(drained, 1)
                 store.save(eng.torus, mind)
                 before_probes = invent_mod.product_probes_for(eng)
                 self.assertNotIn("humid", before_probes)
