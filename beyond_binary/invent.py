@@ -762,6 +762,12 @@ def refresh_invent_registry(
             key = normalize(str(row.get("instance", "")))
             if not key or key in existing_keys:
                 continue
+            # #20: priority tracks mind form-product gain (same scale as accept).
+            gain_n = int(row.get("form_product_gain_count") or 0)
+            g, chain, _invent = mind_form_product_rank_key(
+                list(row.get("ast") or []), gain_count=gain_n
+            )
+            priority = 2.5 + 0.1 * float(g) + 0.05 * float(chain)
             registry.candidates.append(
                 InventCandidate(
                     cause=str(row.get("cause", "")),
@@ -773,7 +779,7 @@ def refresh_invent_registry(
                         "kind": "edit_ast",
                         "ast": list(row.get("ast") or []),
                     },
-                    priority=2.5,
+                    priority=priority,
                 )
             )
             existing_keys.add(key)
@@ -1084,6 +1090,76 @@ def durable_product_exceed_reasons(reasons: list[str] | tuple[str, ...]) -> list
     return out
 
 
+def _is_digest_or_ir_pole(name: str) -> bool:
+    """Reject digest-like / ir* names from mind form-product evidence."""
+    from . import search_substrate as search_mod
+
+    key = normalize(name)
+    if not key:
+        return True
+    if search_mod.looks_like_digest_pole(key):
+        return True
+    # Body-local / digest synthesize poles (ir*, more-*) are not mind form product.
+    if key.startswith("ir") or key.startswith("more-") or key.startswith("more_"):
+        return True
+    return False
+
+
+def answerable_form_product_poles(eng: Engine) -> tuple[str, ...]:
+    """#20: readable cascade/motif poles present+answerable on this mind.
+
+    Uses ``product_probes_for`` (cascade + DOMAIN_INVENT_MOTIFS) and strips
+    digest-like / ``ir*`` names so orphan-body synthesize poles cannot greenwash.
+    """
+    return tuple(
+        p for p in product_probes_for(eng) if not _is_digest_or_ir_pole(p)
+    )
+
+
+def invent_introduced_form_product_poles(
+    search_poles: Iterable[str],
+    null_poles: Iterable[str],
+) -> tuple[str, ...]:
+    """#20: form-product poles search has answerable that Null lacks."""
+    null_keys = {normalize(p) for p in null_poles if not _is_digest_or_ir_pole(p)}
+    out: list[str] = []
+    seen: set[str] = set()
+    for pole in search_poles:
+        if _is_digest_or_ir_pole(pole):
+            continue
+        key = normalize(pole)
+        if key in null_keys or key in seen:
+            continue
+        seen.add(key)
+        out.append(pole)
+    return tuple(out)
+
+
+def mind_form_product_gain(
+    before_eng: Engine,
+    after_eng: Engine,
+) -> tuple[str, ...]:
+    """#20: new answerable form-product poles after a trial invent edit."""
+    before = {normalize(p) for p in answerable_form_product_poles(before_eng)}
+    out: list[str] = []
+    for pole in answerable_form_product_poles(after_eng):
+        if normalize(pole) not in before:
+            out.append(pole)
+    return tuple(out)
+
+
+def mind_form_product_rank_key(
+    ast: list[Any] | tuple[Any, ...] | None,
+    *,
+    gain_count: int,
+) -> tuple[int, int, int]:
+    """#20: higher is better — prefer coverage gain, then chain_depth class."""
+    cls = invent_specialty_class_from_ast(ast) or ""
+    chain_bonus = 1 if cls == "prim_invent_chain_depth" else 0
+    # dual_attach that expands poles still ranks above zero-gain emit-only.
+    return (int(gain_count), chain_bonus, 1 if cls.startswith("prim_invent_") else 0)
+
+
 def search_has_product_exceed_candidate(
     eng: Engine,
     *,
@@ -1295,6 +1371,66 @@ def candidate_earns_distinct_form_product(
     return False
 
 
+def candidate_earns_mind_form_product(
+    eng: Engine,
+    ast: list[Any] | tuple[Any, ...] | None,
+) -> bool:
+    """#20: True when trial-applying ast uniquely expands mind form-product poles."""
+    from . import search_substrate as search_mod
+
+    steps = list(ast or [])
+    if not steps:
+        return False
+    trial = search_mod._clone_engine(eng)
+    if not search_mod.apply_edit_ast(trial, steps):
+        return False
+    return bool(mind_form_product_gain(eng, trial))
+
+
+def search_has_mind_form_product_invent_candidate(
+    eng: Engine,
+    *,
+    used_instances: set[str] | None = None,
+    limit: int = 6,
+    mind_store: Path | str | None = None,
+) -> bool:
+    """#20: True when a post-floor form candidate uniquely expands mind form product."""
+    from . import search_substrate as search_mod
+
+    if search_has_product_exceed_candidate(
+        eng, used_instances=used_instances, limit=limit
+    ):
+        return False
+    embodied_classes: set[str] = set()
+    embodied_emit_max: dict[str, float] = {}
+    if mind_store is not None:
+        embodied_classes, embodied_emit_max = embodied_invent_form_metrics(mind_store)
+    for row in search_mod.search_invent_asts(
+        eng, used_instances=used_instances, limit=limit
+    ):
+        ast = list(row.get("ast") or [])
+        if not edit_ast_couples_invent_specialty(ast):
+            continue
+        ok, _pre, _post, _reason = _trial_search_edit(
+            eng, {"kind": "edit_ast", "ast": ast}
+        )
+        if not ok:
+            continue
+        if not candidate_earns_distinct_form_product(
+            ast,
+            embodied_classes=embodied_classes,
+            embodied_emit_max=embodied_emit_max,
+            instance=str(row.get("instance") or ""),
+            cause=str(row.get("cause") or ""),
+            effect=str(row.get("effect") or ""),
+            edit={"kind": "edit_ast", "ast": ast},
+        ):
+            continue
+        if candidate_earns_mind_form_product(eng, ast):
+            return True
+    return False
+
+
 def search_has_form_productive_invent_candidate(
     eng: Engine,
     *,
@@ -1302,12 +1438,14 @@ def search_has_form_productive_invent_candidate(
     limit: int = 6,
     mind_store: Path | str | None = None,
 ) -> bool:
-    """#18/#19: True when search has an applyable invent AST that earns form product.
+    """#18/#19/#20: True when search has an applyable invent AST that earns form product.
 
     Durable path/structural invents always qualify. Post-floor (durable pool empty)
     candidates must mint a **new** invent specialty class and/or a non-trivial
     invent_* emit vs already-embodied form metrics — stopping identical
-    ``prim_invent_dual_attach`` soft-cap floods.
+    ``prim_invent_dual_attach`` soft-cap floods. When a mind-form-product
+    expander exists, that is preferred; otherwise distinct-class/emit still opens
+    the form budget (fallback).
     """
     from . import search_substrate as search_mod
 
@@ -1456,6 +1594,13 @@ def invent_and_embody(
             ):
                 ok = False
                 reason = "clone_form_flood"
+            # #20: when a mind-form-product expander remains, do not burn the
+            # form budget on emit-only / zero-gain dual_attach.
+            elif search_has_mind_form_product_invent_candidate(
+                eng, mind_store=mind_store
+            ) and not candidate_earns_mind_form_product(eng, ast):
+                ok = False
+                reason = "mind_form_miss"
         if ok:
             break
         detail = {
@@ -1469,8 +1614,12 @@ def invent_and_embody(
             "provenance": "search-substrate:invent",
         }
         store.append_activity([detail], mind_store)
-        if reason in ("meet_only_while_exceed", "clone_form_flood"):
-            # Keep candidate available; durable drain / distinct-form search continues.
+        if reason in (
+            "meet_only_while_exceed",
+            "clone_form_flood",
+            "mind_form_miss",
+        ):
+            # Keep candidate available; durable drain / mind-form search continues.
             skipped_meet_only.add(normalize(proposal.instance))
         else:
             mark_abandoned(proposal.instance, mind_store, why=reason)

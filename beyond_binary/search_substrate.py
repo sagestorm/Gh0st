@@ -439,6 +439,10 @@ def search_invent_asts(
         reasons = invent_mod.product_exceed_reasons(
             eng, trial_eng, pre_score, post_score
         )
+        # #20: annotate meet/form pool with mind form-product gain for ranking.
+        gain = invent_mod.mind_form_product_gain(eng, trial_eng)
+        row["form_product_gain"] = list(gain)
+        row["form_product_gain_count"] = len(gain)
         # #15: only durable exceeds feed the productive / drain pool.
         if invent_mod.durable_product_exceed_reasons(reasons):
             if len(productive) < productive_cap:
@@ -734,6 +738,16 @@ def search_invent_asts(
     # durable productive pool is empty (C4 invent_domain must not starve).
     if productive:
         return productive[:limit]
+    # #20: rank form/meet pool toward mind form product — prefer ASTs that mint
+    # new answerable cascade/motif poles (chain_depth over first add_dual burn).
+    def _form_rank(row: dict[str, Any]) -> tuple[int, int, int, str]:
+        gain_n = int(row.get("form_product_gain_count") or 0)
+        g, chain, invent = invent_mod.mind_form_product_rank_key(
+            list(row.get("ast") or []), gain_count=gain_n
+        )
+        return (-g, -chain, -invent, str(row.get("instance") or ""))
+
+    other.sort(key=_form_rank)
     return other[:limit]
 
 
@@ -1451,8 +1465,15 @@ class SearchSubstrate:
                 # Stash on a module-level pending list for invent.refresh to merge.
                 _PENDING_INVENT.append(dict(payload))
                 return f"search-invent-{payload.get('instance', proposal.proposal_id)}"
-            from .invent import InventCandidate
+            from .invent import InventCandidate, mind_form_product_rank_key
 
+            # #20: boost priority by mind form-product gain / chain_depth so
+            # next_invention prefers coverage-expanding form over first add_dual.
+            gain_n = int(payload.get("form_product_gain_count") or 0)
+            g, chain, _invent = mind_form_product_rank_key(
+                list(payload.get("ast") or []), gain_count=gain_n
+            )
+            priority = 2.5 + 0.1 * float(g) + 0.05 * float(chain)
             registry.candidates.append(
                 InventCandidate(
                     cause=str(payload.get("cause", "")),
@@ -1464,7 +1485,7 @@ class SearchSubstrate:
                         "kind": "edit_ast",
                         "ast": list(payload.get("ast") or []),
                     },
-                    priority=2.5,
+                    priority=priority,
                 )
             )
             return f"search-invent-{payload.get('instance')}"
