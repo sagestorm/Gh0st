@@ -2303,6 +2303,14 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertTrue(report.get("form_exceed"))
             self.assertGreaterEqual(int(report.get("invent_emit_count") or 0), 1)
             self.assertEqual(int(report.get("null_invent_emit_count") or 0), 0)
+            # #20: mind form product — invent-introduced poles Null lacks.
+            self.assertGreaterEqual(
+                int(report.get("invent_introduced_form_product_count") or 0), 1
+            )
+            self.assertEqual(
+                int(report.get("null_invent_form_product_count") or 0),
+                len(null.get("invent_form_product_poles") or []),
+            )
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2313,7 +2321,7 @@ class ProductiveInventTests(unittest.TestCase):
             substrate_mod.reset_logs_for_tests()
 
     def test_verify_p1_surfaces_product_exceed_under_ambient_search(self):
-        """#17/#19: P1 surfaces product/form-behavior exceed adjunct; SENTIENCE stays fail-closed."""
+        """#17/#19/#20: P1 surfaces product/mind-form exceed adjunct; SENTIENCE stays fail-closed."""
         import os
         from beyond_binary import substrate as substrate_mod
         from beyond_binary import verify
@@ -2331,6 +2339,7 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_specialty_count=", ev)
             self.assertIn("invent_emit_count=", ev)
             self.assertIn("null_invent_emit_count=", ev)
+            self.assertIn("invent_introduced_form_product_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2341,6 +2350,9 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertGreaterEqual(int(board.get("invent_specialty_count") or 0), 1)
             self.assertGreaterEqual(int(board.get("invent_emit_count") or 0), 1)
             self.assertEqual(int(board.get("null_invent_emit_count") or 0), 0)
+            self.assertGreaterEqual(
+                int(board.get("invent_introduced_form_product_count") or 0), 1
+            )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
             self.assertIn("SENTIENCE", by_id)
@@ -2530,7 +2542,7 @@ class ProductiveInventTests(unittest.TestCase):
                 substrate_mod.reset_logs_for_tests()
 
     def test_scoreboard_form_productive_invent_past_path_floor(self):
-        """#18/#19: invent past path-floor; behavioral form_exceed; no dual_attach flood."""
+        """#18/#19/#20: invent past path-floor; mind form_exceed; no dual_attach flood."""
         from beyond_binary import product_scoreboard as sb
 
         report = sb.run_scoreboard()
@@ -2588,10 +2600,96 @@ class ProductiveInventTests(unittest.TestCase):
             2,
             msg=f"dual_attach clone flood: {specialties}",
         )
+        # #20: form exceed needs invent-introduced mind poles Null lacks (not emit alone).
+        self.assertGreaterEqual(
+            int(report.get("invent_introduced_form_product_count") or 0), 1
+        )
+        introduced = report.get("invent_introduced_form_product_poles") or []
+        self.assertTrue(introduced, msg=report.get("invent_introduced_form_product_poles"))
+        self.assertFalse(
+            any(str(p).startswith("ir") or str(p).startswith("more-") for p in introduced),
+            msg=introduced,
+        )
+        # #20: chain_depth (or other non-first dual_attach class) can land for mind product.
+        self.assertTrue(
+            "prim_invent_chain_depth" in unique_specs
+            or any(s not in {"prim_invent_rehang_shift", "prim_invent_dual_attach"} for s in unique_specs)
+            or dual_attach_n <= 1,
+            msg=specialties,
+        )
         # Sticky path exceed class preserved (Null isolation + #16 rehangs).
         self.assertEqual(int(report["null"].get("probe_path_len_total") or 0), 88)
         self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
         self.assertEqual(int(report["null"].get("invent_count") or 0), 0)
+
+    def test_form_exceed_requires_mind_form_product_poles(self):
+        """#20: CapProgram invent_* emit alone is insufficient for form_exceed."""
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import product_scoreboard as sb
+
+        null_arm = {
+            "invent_specialty_count": 0,
+            "invent_emit_count": 0,
+            "invent_form_product_poles": ["water", "ice"],
+        }
+        # Emit without invent-introduced poles → no form exceed.
+        emit_only = {
+            "invent_specialty_count": 1,
+            "invent_emit_count": 1,
+            "invent_emit_keys": ["invent_dual_attach"],
+            "invent_form_product_poles": ["water", "ice"],
+        }
+        ok, s_n, n_n = sb.evaluate_form_exceed(null_arm, emit_only)
+        self.assertFalse(ok)
+        self.assertEqual(s_n, 1)
+        self.assertEqual(n_n, 0)
+        # Emit + invent-introduced answerable poles Null lacks → form exceed.
+        mind_form = {
+            "invent_specialty_count": 2,
+            "invent_emit_count": 1,
+            "invent_emit_keys": ["invent_chain_depth"],
+            "invent_form_product_poles": ["water", "ice", "humid", "arid"],
+        }
+        ok2, _, _ = sb.evaluate_form_exceed(null_arm, mind_form)
+        self.assertTrue(ok2)
+        introduced = invent_mod.invent_introduced_form_product_poles(
+            mind_form["invent_form_product_poles"],
+            null_arm["invent_form_product_poles"],
+        )
+        self.assertEqual(set(introduced), {"humid", "arid"})
+
+    def test_post_floor_form_pool_ranks_mind_form_product(self):
+        """#20: post-floor invent pool prefers chain_depth / higher mind form gain."""
+        from beyond_binary.seed import seed_same_center
+        from beyond_binary import invent as invent_mod
+        from beyond_binary import search_substrate as search_mod
+
+        eng = Engine(seed_same_center(("thermal", "ontology", "optical"), minimal=True))
+        LivingCenter(eng).think(6, allow_primary_invent=False)
+        drained = 0
+        while invent_mod.search_has_product_exceed_candidate(eng):
+            rows = search_mod.search_invent_asts(eng, limit=6)
+            self.assertTrue(rows)
+            self.assertTrue(search_mod.apply_edit_ast(eng, rows[0]["ast"]))
+            drained += 1
+            self.assertLessEqual(drained, 8)
+        self.assertGreaterEqual(drained, 1)
+        rows = search_mod.search_invent_asts(eng, limit=6)
+        self.assertTrue(rows)
+        top = rows[0]
+        top_cls = invent_mod.invent_specialty_class_from_ast(top.get("ast") or [])
+        top_gain = int(top.get("form_product_gain_count") or 0)
+        self.assertGreater(top_gain, 0, msg=top)
+        # Prefer chain_depth when it uniquely expands mind form product vs dual_attach.
+        chain_rows = [
+            r
+            for r in rows
+            if invent_mod.invent_specialty_class_from_ast(r.get("ast") or [])
+            == "prim_invent_chain_depth"
+        ]
+        if chain_rows:
+            self.assertEqual(top_cls, "prim_invent_chain_depth", msg=rows)
+            self.assertGreaterEqual(top_gain, 2)
 
     def test_motif_add_dual_exceeds_after_invent_on_think(self):
         """#12: typed invent-motif dual earns usable_probe_coverage after path invent."""

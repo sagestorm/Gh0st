@@ -302,6 +302,10 @@ def _run_arm(
     # #19: unique invent_* emit keys (behavioral form evidence).
     snap["invent_emit_keys"] = sorted(set(invent_emit_keys))
     snap["invent_emit_count"] = len(set(invent_emit_keys))
+    # #20: mind form-product poles (readable answerable cascade/motif on this arm).
+    form_poles = list(invent_mod.answerable_form_product_poles(eng))
+    snap["invent_form_product_poles"] = form_poles
+    snap["invent_form_product_count"] = len(form_poles)
     snap["invent_on_think"] = invent_on_think
     snap["follow_on_invent"] = follow_on_invent
     snap["substrate"] = "search" if use_search else "null"
@@ -409,12 +413,14 @@ def evaluate_form_exceed(
     null_arm: dict[str, Any],
     search_arm: dict[str, Any],
 ) -> tuple[bool, int, int]:
-    """#19: invent→form behavioral exceed — invent_* emits on search, none on Null.
+    """#19/#20: invent→form exceed — mind form product + invent_* emit adjuncts.
 
     Specialty **name** counts remain adjuncts (returned as search/null form_n).
-    Form exceed requires ≥1 invent_* emit key from interpreting invent bodies on
-    search and zero invent bodies / invent_* emits on Null. Bare ``prim_search_*``
-    evolve noise and name presence alone do not count.
+    Form exceed requires:
+      1) ≥1 invent_* emit key on search invent bodies and zero on Null, and
+      2) ≥1 invent-introduced readable answerable form-product pole on search
+         mind that Null lacks (cascade/motif; not digest/``ir*`` / emit-only).
+    CapProgram emit presence alone is insufficient (#20 anti-orphan greenwash).
     """
 
     def _specialty_count(arm: dict[str, Any]) -> int:
@@ -429,11 +435,21 @@ def evaluate_form_exceed(
         keys = arm.get("invent_emit_keys") or []
         return len(set(keys)) if isinstance(keys, list) else 0
 
+    def _form_poles(arm: dict[str, Any]) -> list[str]:
+        poles = arm.get("invent_form_product_poles")
+        if isinstance(poles, list):
+            return [str(p) for p in poles]
+        return []
+
     s_count = _specialty_count(search_arm)
     n_count = _specialty_count(null_arm)
     s_emits = _emit_count(search_arm)
     n_emits = _emit_count(null_arm)
-    return (s_emits >= 1 and n_emits == 0), s_count, n_count
+    introduced = invent_mod.invent_introduced_form_product_poles(
+        _form_poles(search_arm), _form_poles(null_arm)
+    )
+    form_ok = s_emits >= 1 and n_emits == 0 and len(introduced) >= 1
+    return form_ok, s_count, n_count
 
 
 def evaluate_product_exceed(
@@ -525,6 +541,10 @@ def run_scoreboard(
         search_public = {k: v for k, v in search_arm.items() if k != "node_names"}
         search_emit_n = int(search_arm.get("invent_emit_count") or 0)
         null_emit_n = int(null_arm.get("invent_emit_count") or 0)
+        introduced_poles = invent_mod.invent_introduced_form_product_poles(
+            search_arm.get("invent_form_product_poles") or [],
+            null_arm.get("invent_form_product_poles") or [],
+        )
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -534,6 +554,14 @@ def run_scoreboard(
             "null_invent_specialty_count": null_form_n,
             "invent_emit_count": search_emit_n,
             "null_invent_emit_count": null_emit_n,
+            "invent_form_product_count": len(
+                search_arm.get("invent_form_product_poles") or []
+            ),
+            "null_invent_form_product_count": len(
+                null_arm.get("invent_form_product_poles") or []
+            ),
+            "invent_introduced_form_product_count": len(introduced_poles),
+            "invent_introduced_form_product_poles": list(introduced_poles),
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
             "invent_on_think": bool(search_arm.get("invent_on_think")),
@@ -554,10 +582,11 @@ def run_scoreboard(
                 "invent-on-think (primary-path iterative invent while durable "
                 "product-exceed or distinct form-productive invent candidates remain, "
                 "bounded; path-shorten / structural preferred over path-neutral "
-                "motif coverage; post-floor invent earns new specialty class and/or "
-                "non-trivial invent_* emit — not dual_attach clone floods; "
-                "scoreboard adjunct safety-net) and reports cumulative "
-                "product_exceed / behavioral form_exceed vs meet_only_invent"
+                "motif coverage; post-floor invent earns mind form product "
+                "(invent-introduced answerable poles Null lacks) plus invent_* "
+                "emit adjuncts — not dual_attach clone floods or orphan CapProgram "
+                "emit greenwash; scoreboard adjunct safety-net) and reports "
+                "cumulative product_exceed / mind form_exceed vs meet_only_invent"
             ),
             "note": (
                 "Product honesty adjunct — does not redefine SENTIENCE; "

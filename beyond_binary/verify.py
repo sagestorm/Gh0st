@@ -960,6 +960,8 @@ def run_verification() -> dict[str, Any]:
             f"invent_specialty_count={board.get('invent_specialty_count')} "
             f"invent_emit_count={board.get('invent_emit_count')} "
             f"null_invent_emit_count={board.get('null_invent_emit_count')} "
+            f"invent_introduced_form_product_count="
+            f"{board.get('invent_introduced_form_product_count')} "
             f"meet_only_invent={board.get('meet_only_invent')} "
             f"invent_count={board.get('invent_count')} "
             f"null_score={board.get('null', {}).get('score')} "
