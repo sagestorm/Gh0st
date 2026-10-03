@@ -24,6 +24,10 @@ _PRIMARY_PATH_INVENT_DEPTH = 0
 # #13/#14: hard bound on iterative product-exceed invents (think primary path +
 # scoreboard adjunct). Total applied invents per drain ≤ this value.
 MAX_FOLLOW_ON_INVENTS = 8
+# #18: after durable path-floor, at most this many form-productive invents
+# (prim_invent_* / origin=search-invent). Prevents motif soft_cap flood while
+# restoring invent_count≥3 + form_exceed. Total still ≤ MAX_FOLLOW_ON_INVENTS.
+MAX_FORM_PRODUCTIVE_FOLLOW_ONS = 1
 
 
 @dataclass
@@ -582,12 +586,23 @@ class LivingCenter:
             last = result
             if not _applied(result):
                 return last
-            # #14/#18: drain durable exceeds, then form-productive invents.
+            # #14/#18: drain durable exceeds, then bounded form-productive invents.
             # Hard cap: first invent + follow-ons ≤ MAX_FOLLOW_ON_INVENTS.
+            # Form budget: at most MAX_FORM_PRODUCTIVE_FOLLOW_ONS after durable empty
+            # (motif ASTs regenerate forever — do not fill the soft_cap).
+            form_follow = 0
             for step in range(1, MAX_FOLLOW_ON_INVENTS):
-                if not invent_mod.search_has_form_productive_invent_candidate(
+                has_durable = invent_mod.search_has_product_exceed_candidate(
+                    self.engine
+                )
+                if has_durable:
+                    pass
+                elif invent_mod.search_has_form_productive_invent_candidate(
                     self.engine
                 ):
+                    if form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS:
+                        break
+                else:
                     break
                 follow = mind_mod.invent_domain(
                     self.engine,
@@ -600,6 +615,8 @@ class LivingCenter:
                 last = follow
                 if not _applied(follow):
                     break
+                if not has_durable:
+                    form_follow += 1
         finally:
             _PRIMARY_PATH_INVENT_DEPTH -= 1
         return last

@@ -12,7 +12,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .center import LivingCenter, StructuralScore, MAX_FOLLOW_ON_INVENTS
+from .center import (
+    LivingCenter,
+    StructuralScore,
+    MAX_FOLLOW_ON_INVENTS,
+    MAX_FORM_PRODUCTIVE_FOLLOW_ONS,
+)
 from .engine import Engine, normalize
 from .seed import seed_same_center
 from . import invent as invent_mod
@@ -188,14 +193,25 @@ def _run_arm(
             # #14: ≥2 applied primary invents ⇒ iterative invent-on-think drained exceeds.
             if invent_count >= 2:
                 follow_on_invent = True
-            # #13/#18 safety net: adjunct invent_domain while form-productive invent
-            # remains (usually empty after #18 primary-path drain).
+            # #13/#18 safety net: adjunct invent while durable or form budget remains
+            # (usually empty after primary-path drain).
             from . import mind as mind_mod
 
+            form_follow = sum(
+                1
+                for inst in invent_instances
+                if not str(inst).startswith("rehang-")
+            )
             for _ in range(MAX_FOLLOW_ON_INVENTS):
                 if invent_count >= MAX_FOLLOW_ON_INVENTS:
                     break
-                if not invent_mod.search_has_form_productive_invent_candidate(eng):
+                has_durable = invent_mod.search_has_product_exceed_candidate(eng)
+                if has_durable:
+                    pass
+                elif invent_mod.search_has_form_productive_invent_candidate(eng):
+                    if form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS:
+                        break
+                else:
                     break
                 follow = mind_mod.invent_domain(
                     eng, path, cycle=max(1, invent_count) + 1
@@ -214,6 +230,8 @@ def _run_arm(
                     invent_instance = inst
                 if prov:
                     invent_provenance = prov
+                if not has_durable:
+                    form_follow += 1
         finally:
             if prev is None:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
