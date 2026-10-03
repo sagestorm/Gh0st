@@ -2277,6 +2277,68 @@ class ProductiveInventTests(unittest.TestCase):
         )
         _ = invent_mod
 
+    def test_scoreboard_null_arm_isolated_under_ambient_search(self):
+        """#17: ambient search must not pollute Null arm or greenwash product_exceed."""
+        import os
+        from beyond_binary import product_scoreboard as sb
+        from beyond_binary import substrate as substrate_mod
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        try:
+            report = sb.run_scoreboard()
+            self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+            null = report["null"]
+            self.assertEqual(null.get("substrate"), "null")
+            self.assertFalse(null.get("invent_on_think"))
+            self.assertFalse(null.get("invent_applied"))
+            self.assertEqual(int(null.get("invent_count") or 0), 0)
+            self.assertEqual(null.get("invent_instances") or [], [])
+            # Search keeps #16 stacked durable invents + path exceed vs honest Null.
+            self.assertGreaterEqual(int(report.get("invent_count") or 0), 2)
+            self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
+            self.assertTrue(report.get("follow_on_invent"))
+            self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+            self.assertFalse(report.get("meet_only_invent"))
+            self.assertLess(
+                int(report["search"].get("probe_path_len_total") or 0),
+                int(null.get("probe_path_len_total") or 0),
+            )
+            # Ambient flag restored for nested verify honesty.
+            self.assertEqual(os.environ.get(substrate_mod.ENV_FLAG), "search")
+        finally:
+            os.environ.pop(substrate_mod.ENV_FLAG, None)
+            substrate_mod.reset_logs_for_tests()
+
+    def test_verify_p1_surfaces_product_exceed_under_ambient_search(self):
+        """#17: P1 evidence includes product_exceed adjunct; SENTIENCE stays fail-closed."""
+        import os
+        from beyond_binary import substrate as substrate_mod
+        from beyond_binary import verify
+
+        os.environ[substrate_mod.ENV_FLAG] = "search"
+        substrate_mod.reset_logs_for_tests()
+        try:
+            report = verify.run_verification()
+            by_id = {g["id"]: g for g in report["gates"]}
+            self.assertIn("P1", by_id)
+            self.assertTrue(by_id["P1"]["ok"], msg=by_id["P1"]["evidence"])
+            ev = by_id["P1"]["evidence"]
+            self.assertIn("product_exceed=", ev)
+            self.assertIn("meet_only_invent=", ev)
+            self.assertIn("invent_count=", ev)
+            board = report.get("product_scoreboard") or {}
+            self.assertTrue(board.get("product_exceed"), msg=board.get("exceeds"))
+            self.assertFalse(board.get("meet_only_invent"))
+            self.assertGreaterEqual(int(board.get("invent_count") or 0), 2)
+            # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
+            # not product_exceed (bar not loosened / not redefined by #17).
+            self.assertIn("SENTIENCE", by_id)
+            self.assertNotIn("product_exceed", by_id["SENTIENCE"].get("evidence", ""))
+        finally:
+            os.environ.pop(substrate_mod.ENV_FLAG, None)
+            substrate_mod.reset_logs_for_tests()
+
     def test_primary_path_iterates_exceed_invent_until_pool_empty(self):
         """#14/#15: think drains durable exceeds; product_exceed vs Null survives."""
         import os

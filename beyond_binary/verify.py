@@ -955,6 +955,9 @@ def run_verification() -> dict[str, Any]:
         regs = list(board.get("regressions") or [])
         p1_ev = (
             f"meet_or_exceed={p1_ok} regressions={regs[:6]} "
+            f"product_exceed={board.get('product_exceed')} "
+            f"meet_only_invent={board.get('meet_only_invent')} "
+            f"invent_count={board.get('invent_count')} "
             f"null_score={board.get('null', {}).get('score')} "
             f"search_score={board.get('search', {}).get('score')} "
             f"search_readable={board.get('search', {}).get('readable_name_ratio')} "
