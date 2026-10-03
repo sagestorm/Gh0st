@@ -2311,6 +2311,12 @@ class ProductiveInventTests(unittest.TestCase):
                 int(report.get("null_invent_form_product_count") or 0),
                 len(null.get("invent_form_product_poles") or []),
             )
+            # #21: product_exceed includes invent-form product class (not path-only).
+            exceeds = report.get("exceeds") or []
+            self.assertIn("invent_form_product_coverage", exceeds)
+            self.assertGreaterEqual(
+                int(report.get("invent_form_product_coverage_count") or 0), 1
+            )
             self.assertFalse(report.get("meet_only_invent"))
             self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
             self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
@@ -2340,6 +2346,7 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertIn("invent_emit_count=", ev)
             self.assertIn("null_invent_emit_count=", ev)
             self.assertIn("invent_introduced_form_product_count=", ev)
+            self.assertIn("invent_form_product_coverage_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
@@ -2352,6 +2359,10 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertEqual(int(board.get("null_invent_emit_count") or 0), 0)
             self.assertGreaterEqual(
                 int(board.get("invent_introduced_form_product_count") or 0), 1
+            )
+            self.assertIn("invent_form_product_coverage", board.get("exceeds") or [])
+            self.assertGreaterEqual(
+                int(board.get("invent_form_product_coverage_count") or 0), 1
             )
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
             # not product_exceed / form_exceed (bar not loosened).
@@ -2610,6 +2621,31 @@ class ProductiveInventTests(unittest.TestCase):
             any(str(p).startswith("ir") or str(p).startswith("more-") for p in introduced),
             msg=introduced,
         )
+        # #21: Living Center product_exceed credits invent-form product vs Null.
+        exceeds = report.get("exceeds") or []
+        self.assertIn("invent_form_product_coverage", exceeds)
+        self.assertTrue(
+            any(str(e).startswith("invent_form_product_coverage:") for e in exceeds),
+            msg=exceeds,
+        )
+        self.assertGreaterEqual(
+            int(report.get("invent_form_product_coverage_count") or 0), 1
+        )
+        # Null arm has zero invent-form product coverage class.
+        null_form_poles = report["null"].get("invent_form_product_poles") or []
+        self.assertFalse(
+            any(normalize(p) in {normalize(x) for x in introduced} for p in null_form_poles),
+            msg=(null_form_poles, introduced),
+        )
+        # Cascade path floor still present alongside form-derived product class.
+        self.assertTrue(
+            any(
+                e == "probe_path_len_total"
+                or str(e).startswith("probe_path_shorter:")
+                for e in exceeds
+            ),
+            msg=exceeds,
+        )
         # #20: chain_depth (or other non-first dual_attach class) can land for mind product.
         self.assertTrue(
             "prim_invent_chain_depth" in unique_specs
@@ -2657,6 +2693,79 @@ class ProductiveInventTests(unittest.TestCase):
             null_arm["invent_form_product_poles"],
         )
         self.assertEqual(set(introduced), {"humid", "arid"})
+
+    def test_product_exceed_credits_invent_form_product_coverage(self):
+        """#21: invent-introduced poles Null lacks earn a product_exceed class."""
+        from beyond_binary import product_scoreboard as sb
+
+        base_score = {
+            "dual_coverage": 1.0,
+            "link_symmetry": 1.0,
+            "unused_path_cost": 0.0,
+            "node_count": 10,
+        }
+        null_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": ["water", "ice"],
+            "invent_emit_count": 0,
+        }
+        # Shared path meet + invent-introduced poles → form-derived product class.
+        search_arm = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": ["water", "ice", "humid", "arid"],
+            "invent_emit_count": 1,
+        }
+        exceeded, exceeds = sb.evaluate_product_exceed(
+            null_arm, search_arm, probes=("water",)
+        )
+        self.assertTrue(exceeded)
+        self.assertIn("invent_form_product_coverage", exceeds)
+        self.assertIn("invent_form_product_coverage:humid", exceeds)
+        self.assertIn("invent_form_product_coverage:arid", exceeds)
+        # CapProgram emit / form_exceed alone is insufficient without poles.
+        emit_only = {
+            "score": dict(base_score),
+            "probe_path_len_total": 20,
+            "probes": {"water": {"answerable": True, "path_len": 5}},
+            "invent_form_product_poles": ["water", "ice"],
+            "invent_emit_count": 2,
+        }
+        exceeded2, exceeds2 = sb.evaluate_product_exceed(
+            null_arm, emit_only, probes=("water",)
+        )
+        self.assertFalse(exceeded2)
+        self.assertNotIn("invent_form_product_coverage", exceeds2)
+
+    def test_durable_invent_excludes_motif_path_shortens(self):
+        """#21: invent-motif path-shortens are not pre-floor cascade durable fuel."""
+        from beyond_binary import invent as invent_mod
+
+        # Cascade path shorten remains durable (#15).
+        cascade_reasons = [
+            "probe_path_shorter:water",
+            "probe_path_len_total",
+            "usable_probe_coverage",
+        ]
+        durable = invent_mod.durable_product_exceed_reasons(cascade_reasons)
+        self.assertEqual(
+            durable, ["probe_path_shorter:water", "probe_path_len_total"]
+        )
+        # Motif-only path shorten + total must not reopen durable drain.
+        motif_reasons = [
+            "probe_path_shorter:humid",
+            "probe_path_shorter:arid",
+            "probe_path_len_total",
+            "usable_probe_coverage",
+        ]
+        self.assertEqual(
+            invent_mod.durable_product_exceed_reasons(motif_reasons), []
+        )
+        self.assertTrue(invent_mod._is_cascade_probe_topic("water"))
+        self.assertFalse(invent_mod._is_cascade_probe_topic("humid"))
 
     def test_post_floor_form_pool_ranks_mind_form_product(self):
         """#20: post-floor invent pool prefers chain_depth / higher mind form gain."""
