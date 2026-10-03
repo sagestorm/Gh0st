@@ -24,6 +24,10 @@ _PRIMARY_PATH_INVENT_DEPTH = 0
 # #13/#14: hard bound on iterative product-exceed invents (think primary path +
 # scoreboard adjunct). Total applied invents per drain ≤ this value.
 MAX_FOLLOW_ON_INVENTS = 8
+# #18: after durable path-floor, at most this many form-productive invents
+# (prim_invent_* / origin=search-invent). Prevents motif soft_cap flood while
+# restoring invent_count≥3 + form_exceed. Total still ≤ MAX_FOLLOW_ON_INVENTS.
+MAX_FORM_PRODUCTIVE_FOLLOW_ONS = 1
 
 
 @dataclass
@@ -547,8 +551,9 @@ class LivingCenter:
         """Run quality-gated invent(s) on the primary path (search only).
 
         #2: first invent-on-think when strategy wants invent under search.
-        #14: keep applying while ``search_has_product_exceed_candidate`` remains
-        (bounded) — parity with scoreboard iterative follow-on invent.
+        #14: keep applying while durable product-exceed candidates remain.
+        #18: after path-floor, continue while form-productive invent ASTs remain
+        (bounded) — invent-coupled CapProgram specialty, not LexEntry nest treadmill.
         """
         global _PRIMARY_PATH_INVENT_DEPTH
         if not self._prefer_primary_path_invent():
@@ -581,10 +586,23 @@ class LivingCenter:
             last = result
             if not _applied(result):
                 return last
-            # #14: drain remaining product-exceed candidates on the primary path.
+            # #14/#18: drain durable exceeds, then bounded form-productive invents.
             # Hard cap: first invent + follow-ons ≤ MAX_FOLLOW_ON_INVENTS.
+            # Form budget: at most MAX_FORM_PRODUCTIVE_FOLLOW_ONS after durable empty
+            # (motif ASTs regenerate forever — do not fill the soft_cap).
+            form_follow = 0
             for step in range(1, MAX_FOLLOW_ON_INVENTS):
-                if not invent_mod.search_has_product_exceed_candidate(self.engine):
+                has_durable = invent_mod.search_has_product_exceed_candidate(
+                    self.engine
+                )
+                if has_durable:
+                    pass
+                elif invent_mod.search_has_form_productive_invent_candidate(
+                    self.engine
+                ):
+                    if form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS:
+                        break
+                else:
                     break
                 follow = mind_mod.invent_domain(
                     self.engine,
@@ -597,6 +615,8 @@ class LivingCenter:
                 last = follow
                 if not _applied(follow):
                     break
+                if not has_durable:
+                    form_follow += 1
         finally:
             _PRIMARY_PATH_INVENT_DEPTH -= 1
         return last
@@ -607,7 +627,8 @@ class LivingCenter:
         if steps < 1:
             raise RuleError("think steps must be >= 1")
         reports = [self.cycle() for _ in range(steps)]
-        # #2/#14: Prefer search invent on think(); iterate while exceed remains.
+        # #2/#14/#18: Prefer search invent on think(); iterate while durable
+        # exceed or form-productive invent candidates remain (bounded).
         # Null path unchanged — helper no-ops unless SearchSubstrate is active.
         # invent_and_embody body warm-up passes allow_primary_invent=False.
         if allow_primary_invent:

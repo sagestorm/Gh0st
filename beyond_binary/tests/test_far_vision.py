@@ -2239,7 +2239,7 @@ class ProductiveInventTests(unittest.TestCase):
                 )
 
     def test_scoreboard_iterates_follow_on_until_exceed_pool_empty(self):
-        """#14/#15: after durable invent drain, product_exceed holds (not meet-only)."""
+        """#14/#15/#18: durable invent drain keeps path exceed; form invents may follow."""
         from beyond_binary import product_scoreboard as sb
         from beyond_binary import invent as invent_mod
 
@@ -2266,19 +2266,18 @@ class ProductiveInventTests(unittest.TestCase):
             msg=report.get("exceeds"),
         )
         instances = report["search"].get("invent_instances") or []
+        rehangs = [i for i in instances if str(i).startswith("rehang-")]
+        # Durable path invents still lead; #18 may append form-productive invents.
+        self.assertGreaterEqual(len(rehangs), 2, msg=instances)
         self.assertTrue(
-            all(str(i).startswith("rehang-") for i in instances),
-            msg=instances,
-        )
-        # Motif-only coverage must not dominate the drained invent set.
-        self.assertFalse(
-            any(str(i).startswith("search-add-") for i in instances),
+            str(instances[0]).startswith("rehang-")
+            and str(instances[1]).startswith("rehang-"),
             msg=instances,
         )
         _ = invent_mod
 
     def test_scoreboard_null_arm_isolated_under_ambient_search(self):
-        """#17: ambient search must not pollute Null arm or greenwash product_exceed."""
+        """#17/#18: ambient search must not pollute Null arm or greenwash product_exceed."""
         import os
         from beyond_binary import product_scoreboard as sb
         from beyond_binary import substrate as substrate_mod
@@ -2294,16 +2293,16 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertFalse(null.get("invent_applied"))
             self.assertEqual(int(null.get("invent_count") or 0), 0)
             self.assertEqual(null.get("invent_instances") or [], [])
-            # Search keeps #16 stacked durable invents + path exceed vs honest Null.
-            self.assertGreaterEqual(int(report.get("invent_count") or 0), 2)
+            self.assertEqual(int(null.get("invent_specialty_count") or 0), 0)
+            # Search keeps path exceed (88→80 class) + form invent depth vs honest Null.
+            self.assertGreaterEqual(int(report.get("invent_count") or 0), 3)
             self.assertTrue(report.get("invent_on_think") or report["search"].get("invent_on_think"))
             self.assertTrue(report.get("follow_on_invent"))
             self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+            self.assertTrue(report.get("form_exceed"))
             self.assertFalse(report.get("meet_only_invent"))
-            self.assertLess(
-                int(report["search"].get("probe_path_len_total") or 0),
-                int(null.get("probe_path_len_total") or 0),
-            )
+            self.assertEqual(int(null.get("probe_path_len_total") or 0), 88)
+            self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
             # Ambient flag restored for nested verify honesty.
             self.assertEqual(os.environ.get(substrate_mod.ENV_FLAG), "search")
         finally:
@@ -2311,7 +2310,7 @@ class ProductiveInventTests(unittest.TestCase):
             substrate_mod.reset_logs_for_tests()
 
     def test_verify_p1_surfaces_product_exceed_under_ambient_search(self):
-        """#17: P1 evidence includes product_exceed adjunct; SENTIENCE stays fail-closed."""
+        """#17/#18: P1 surfaces product/form exceed adjunct; SENTIENCE stays fail-closed."""
         import os
         from beyond_binary import substrate as substrate_mod
         from beyond_binary import verify
@@ -2325,22 +2324,28 @@ class ProductiveInventTests(unittest.TestCase):
             self.assertTrue(by_id["P1"]["ok"], msg=by_id["P1"]["evidence"])
             ev = by_id["P1"]["evidence"]
             self.assertIn("product_exceed=", ev)
+            self.assertIn("form_exceed=", ev)
+            self.assertIn("invent_specialty_count=", ev)
             self.assertIn("meet_only_invent=", ev)
             self.assertIn("invent_count=", ev)
             board = report.get("product_scoreboard") or {}
             self.assertTrue(board.get("product_exceed"), msg=board.get("exceeds"))
+            self.assertTrue(board.get("form_exceed"))
             self.assertFalse(board.get("meet_only_invent"))
-            self.assertGreaterEqual(int(board.get("invent_count") or 0), 2)
+            self.assertGreaterEqual(int(board.get("invent_count") or 0), 3)
+            self.assertGreaterEqual(int(board.get("invent_specialty_count") or 0), 1)
             # P1 is adjunct only — SENTIENCE still keys off four-axis search accepts,
-            # not product_exceed (bar not loosened / not redefined by #17).
+            # not product_exceed / form_exceed (bar not loosened).
             self.assertIn("SENTIENCE", by_id)
-            self.assertNotIn("product_exceed", by_id["SENTIENCE"].get("evidence", ""))
+            sent_ev = by_id["SENTIENCE"].get("evidence", "")
+            self.assertNotIn("product_exceed", sent_ev)
+            self.assertNotIn("form_exceed", sent_ev)
         finally:
             os.environ.pop(substrate_mod.ENV_FLAG, None)
             substrate_mod.reset_logs_for_tests()
 
     def test_primary_path_iterates_exceed_invent_until_pool_empty(self):
-        """#14/#15: think drains durable exceeds; product_exceed vs Null survives."""
+        """#14/#15/#18: think drains durable then form invents; path exceed survives."""
         import os
         import tempfile
         from pathlib import Path
@@ -2378,19 +2383,21 @@ class ProductiveInventTests(unittest.TestCase):
                     and r.get("invented") is not False
                     and isinstance(r.get("invention"), dict)
                 ]
-                self.assertGreaterEqual(len(applied), 2)  # #16: stacked durable surfaces
+                self.assertGreaterEqual(len(applied), 3)  # #18: past path-floor form invent
                 self.assertLessEqual(len(applied), MAX_FOLLOW_ON_INVENTS)
                 instances = [
                     str((r.get("invention") or {}).get("instance") or "")
                     for r in applied
                 ]
+                rehangs = [i for i in instances if i.startswith("rehang-")]
+                self.assertGreaterEqual(len(rehangs), 2, msg=instances)
+                # Durable path invents first; form-productive invents may follow.
                 self.assertTrue(
-                    any(i.startswith("rehang-") for i in instances), msg=instances
+                    instances[0].startswith("rehang-")
+                    and instances[1].startswith("rehang-"),
+                    msg=instances,
                 )
-                self.assertTrue(
-                    all(i.startswith("rehang-") for i in instances), msg=instances
-                )
-                # #15/#16: durable pool empty — coverage-only motifs do not keep it open.
+                # #15/#16: durable pool empty after path invents (form invents continue).
                 self.assertFalse(invent_mod.search_has_product_exceed_candidate(eng))
                 search_snap = sb._snapshot(eng, null_probes)
                 pe, exceeds = sb.evaluate_product_exceed(
@@ -2460,7 +2467,7 @@ class ProductiveInventTests(unittest.TestCase):
         )
 
     def test_stacked_durable_invent_surfaces_after_drain(self):
-        """#16: nested cascade yields ≥2 durable invents; path exceed survives drain."""
+        """#16/#18: nested cascade yields ≥2 durable invents; form invents may follow."""
         import os
         import tempfile
         from pathlib import Path
@@ -2476,16 +2483,10 @@ class ProductiveInventTests(unittest.TestCase):
         self.assertFalse(report.get("meet_only_invent"))
         invent_count = int(report.get("invent_count") or 0)
         instances = report["search"].get("invent_instances") or []
-        # Either stacked durable invents applied, or honesty proves no second remains.
-        if invent_count >= 2:
-            self.assertTrue(report.get("follow_on_invent"))
-            self.assertGreaterEqual(len(instances), 2)
-            self.assertTrue(
-                all(str(i).startswith("rehang-") for i in instances),
-                msg=instances,
-            )
-        else:
-            self.assertGreaterEqual(invent_count, 1)
+        rehangs = [i for i in instances if str(i).startswith("rehang-")]
+        self.assertGreaterEqual(invent_count, 2)
+        self.assertTrue(report.get("follow_on_invent"))
+        self.assertGreaterEqual(len(rehangs), 2, msg=instances)
 
         with tempfile.TemporaryDirectory() as tmp:
             mind = Path(tmp) / "mind.json"
@@ -2520,6 +2521,42 @@ class ProductiveInventTests(unittest.TestCase):
             finally:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
                 substrate_mod.reset_logs_for_tests()
+
+    def test_scoreboard_form_productive_invent_past_path_floor(self):
+        """#18: invent continues past path-floor; form_exceed honesty vs Null."""
+        from beyond_binary import product_scoreboard as sb
+
+        report = sb.run_scoreboard()
+        self.assertTrue(report["meet_or_exceed"], msg=report.get("regressions"))
+        self.assertTrue(report.get("product_exceed"), msg=report.get("exceeds"))
+        self.assertFalse(report.get("meet_only_invent"))
+        invent_count = int(report.get("invent_count") or 0)
+        self.assertGreaterEqual(invent_count, 3)
+        self.assertLessEqual(invent_count, sb.MAX_FOLLOW_ON_INVENTS)
+        instances = report["search"].get("invent_instances") or []
+        rehangs = [i for i in instances if str(i).startswith("rehang-")]
+        self.assertGreaterEqual(len(rehangs), 2, msg=instances)
+        # ≥1 post-rehang form-productive invent (add_dual / chain / …).
+        self.assertTrue(
+            any(not str(i).startswith("rehang-") for i in instances),
+            msg=instances,
+        )
+        self.assertTrue(report.get("form_exceed"))
+        self.assertGreaterEqual(int(report.get("invent_specialty_count") or 0), 1)
+        self.assertEqual(int(report.get("null_invent_specialty_count") or 0), 0)
+        specialties = report["search"].get("invent_specialties") or []
+        self.assertTrue(
+            all(str(s).startswith("prim_invent_") for s in specialties),
+            msg=specialties,
+        )
+        self.assertFalse(
+            any(str(s).startswith("prim_search_") for s in specialties),
+            msg=specialties,
+        )
+        # Sticky path exceed class preserved (Null isolation + #16 rehangs).
+        self.assertEqual(int(report["null"].get("probe_path_len_total") or 0), 88)
+        self.assertEqual(int(report["search"].get("probe_path_len_total") or 0), 80)
+        self.assertEqual(int(report["null"].get("invent_count") or 0), 0)
 
     def test_motif_add_dual_exceeds_after_invent_on_think(self):
         """#12: typed invent-motif dual earns usable_probe_coverage after path invent."""
