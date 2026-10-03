@@ -547,8 +547,9 @@ class LivingCenter:
         """Run quality-gated invent(s) on the primary path (search only).
 
         #2: first invent-on-think when strategy wants invent under search.
-        #14: keep applying while ``search_has_product_exceed_candidate`` remains
-        (bounded) — parity with scoreboard iterative follow-on invent.
+        #14: keep applying while durable product-exceed candidates remain.
+        #18: after path-floor, continue while form-productive invent ASTs remain
+        (bounded) — invent-coupled CapProgram specialty, not LexEntry nest treadmill.
         """
         global _PRIMARY_PATH_INVENT_DEPTH
         if not self._prefer_primary_path_invent():
@@ -581,10 +582,12 @@ class LivingCenter:
             last = result
             if not _applied(result):
                 return last
-            # #14: drain remaining product-exceed candidates on the primary path.
+            # #14/#18: drain durable exceeds, then form-productive invents.
             # Hard cap: first invent + follow-ons ≤ MAX_FOLLOW_ON_INVENTS.
             for step in range(1, MAX_FOLLOW_ON_INVENTS):
-                if not invent_mod.search_has_product_exceed_candidate(self.engine):
+                if not invent_mod.search_has_form_productive_invent_candidate(
+                    self.engine
+                ):
                     break
                 follow = mind_mod.invent_domain(
                     self.engine,
@@ -607,7 +610,8 @@ class LivingCenter:
         if steps < 1:
             raise RuleError("think steps must be >= 1")
         reports = [self.cycle() for _ in range(steps)]
-        # #2/#14: Prefer search invent on think(); iterate while exceed remains.
+        # #2/#14/#18: Prefer search invent on think(); iterate while durable
+        # exceed or form-productive invent candidates remain (bounded).
         # Null path unchanged — helper no-ops unless SearchSubstrate is active.
         # invent_and_embody body warm-up passes allow_primary_invent=False.
         if allow_primary_invent:

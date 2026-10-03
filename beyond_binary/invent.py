@@ -1115,6 +1115,73 @@ def search_has_product_exceed_candidate(
     return False
 
 
+def edit_ast_couples_invent_specialty(ast: list[Any] | tuple[Any, ...]) -> bool:
+    """#18: True when edit_ast ops would mint ``prim_invent_*`` (origin=search-invent).
+
+    Matches ``capability.couple_program_to_invent_edit`` — any non-empty invent
+    op list stamps an invent-coupled CapProgram specialty. Bare ``prim_search_*``
+    evolve noise is not invent-coupled.
+    """
+    ops = [
+        str(step.get("op", ""))
+        for step in ast
+        if isinstance(step, dict) and step.get("op")
+    ]
+    return bool(ops)
+
+
+def search_has_form_productive_invent_candidate(
+    eng: Engine,
+    *,
+    used_instances: set[str] | None = None,
+    limit: int = 6,
+) -> bool:
+    """#18: True when search has an applyable invent AST that embodies invent form.
+
+    Includes durable path/structural invents (they couple ``prim_invent_*``) and
+    post-floor form-productive meet invents (typed add_dual / chain / …) once
+    the durable pool is empty. Rejects candidates that fail the trial gate
+    (including meet-only while a durable exceed remains).
+    """
+    from . import search_substrate as search_mod
+
+    for row in search_mod.search_invent_asts(
+        eng, used_instances=used_instances, limit=limit
+    ):
+        ast = list(row.get("ast") or [])
+        if not edit_ast_couples_invent_specialty(ast):
+            continue
+        ok, _pre, _post, _reason = _trial_search_edit(
+            eng, {"kind": "edit_ast", "ast": ast}
+        )
+        if ok:
+            return True
+    return False
+
+
+def invent_specialty_names_from_body(body: dict[str, Any] | None) -> list[str]:
+    """#18: ``prim_invent_*`` names with origin=search-invent on an invent body."""
+    if not isinstance(body, dict):
+        return []
+    store_path = body.get("store_path")
+    if not store_path:
+        return []
+    from . import capability as capability_mod
+
+    try:
+        prog = capability_mod.load_program(store_path)
+    except Exception:  # noqa: BLE001 — missing/corrupt capability → no specialty
+        return []
+    names: list[str] = []
+    for name, spec in (prog.primitives or {}).items():
+        if not str(name).startswith("prim_invent_"):
+            continue
+        if not isinstance(spec, dict) or spec.get("origin") != "search-invent":
+            continue
+        names.append(str(name))
+    return names
+
+
 def _trial_search_edit(eng: Engine, edit: dict[str, Any]) -> tuple[bool, Any, Any, str]:
     """Trial-apply search edit_ast; return (ok, pre_score, post_score, reason)."""
     from . import search_substrate as search_mod

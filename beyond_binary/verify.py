@@ -956,6 +956,8 @@ def run_verification() -> dict[str, Any]:
         p1_ev = (
             f"meet_or_exceed={p1_ok} regressions={regs[:6]} "
             f"product_exceed={board.get('product_exceed')} "
+            f"form_exceed={board.get('form_exceed')} "
+            f"invent_specialty_count={board.get('invent_specialty_count')} "
             f"meet_only_invent={board.get('meet_only_invent')} "
             f"invent_count={board.get('invent_count')} "
             f"null_score={board.get('null', {}).get('score')} "
