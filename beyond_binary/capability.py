@@ -171,9 +171,10 @@ def _op_measure_depth(ctx: dict[str, Any], args: dict[str, Any]) -> None:
 def _op_dual_answer(ctx: dict[str, Any], args: dict[str, Any]) -> None:
     eng: Engine = ctx["eng"]
     topic = args.get("topic") or ctx["cause"]
+    into = str(args.get("into") or "dual")
     if topic and eng.exists(topic):
         dual = eng.answer(topic)
-        ctx["dual"] = {
+        ctx[into] = {
             "topic": dual.topic,
             "cause_paths": dual.cause_paths,
             "effect_paths": dual.effect_paths,
@@ -237,6 +238,8 @@ def _op_emit(ctx: dict[str, Any], args: dict[str, Any]) -> None:
             out[f] = scalars[f]
         elif f == "dual" and "dual" in ctx:
             out["dual"] = ctx["dual"]
+        elif f == "dual_pair" and "dual_pair" in ctx:
+            out["dual_pair"] = ctx["dual_pair"]
         elif f in (ctx.get("measures") or {}):
             out[f] = ctx["measures"][f]
 
@@ -644,16 +647,54 @@ def _invent_touched_dual_answer_topic(
     return None
 
 
-def _set_dual_answer_topic(program: CapProgram, topic: str) -> bool:
-    """Set CapProgram dual_answer.topic; return True when the topic changed."""
+def _invent_touched_effect_dual_answer_topic(
+    eng: Engine,
+    edit: dict[str, Any] | None,
+) -> str | None:
+    """#26: invent-touched readable product **effect** pole for pair CapProgram.
+
+    Uses leaf ``cause``/``effect`` pairs only (not domain parent roots) so
+    ``dual_pair`` answers ``thaw``/``manifest``/``shadow`` rather than ``cold``.
+    """
+    from . import invent as invent_mod
+
+    if not edit or edit.get("kind") != "edit_ast":
+        return None
+    ast = [s for s in list(edit.get("ast") or []) if isinstance(s, dict)]
+    for step in ast:
+        c_raw, e_raw = step.get("cause"), step.get("effect")
+        if not c_raw or not e_raw:
+            continue
+        c, e = str(c_raw), str(e_raw)
+        if invent_mod._is_digest_or_ir_pole(c) or invent_mod._is_digest_or_ir_pole(e):
+            continue
+        if _dual_answerable_product_topic(eng, e):
+            return e
+    return None
+
+
+def _set_dual_answer_topic(
+    program: CapProgram,
+    topic: str,
+    *,
+    into: str = "dual",
+) -> bool:
+    """Set CapProgram dual_answer.topic for emit slot ``into``; True if changed."""
     for op in program.ops:
-        if op.get("op") == "dual_answer":
-            prev = op.get("topic")
-            if prev == topic:
-                return False
-            op["topic"] = topic
-            return True
-    _insert_before_emit(program, {"op": "dual_answer", "topic": topic})
+        if op.get("op") != "dual_answer":
+            continue
+        slot = str(op.get("into") or "dual")
+        if slot != into:
+            continue
+        prev = op.get("topic")
+        if prev == topic:
+            return False
+        op["topic"] = topic
+        return True
+    step: dict[str, Any] = {"op": "dual_answer", "topic": topic}
+    if into != "dual":
+        step["into"] = into
+    _insert_before_emit(program, step)
     return True
 
 
@@ -747,6 +788,12 @@ def couple_program_to_invent_edit(
     topic = _invent_touched_dual_answer_topic(eng, edit)
     if topic and _set_dual_answer_topic(program, topic):
         program.revisions += 1
+    # #26: effect-side pair specialty — second dual_answer emit slot dual_pair.
+    effect_topic = _invent_touched_effect_dual_answer_topic(eng, edit)
+    if effect_topic and effect_topic != topic:
+        if _set_dual_answer_topic(program, effect_topic, into="dual_pair"):
+            program.revisions += 1
+            _ensure_emit_field(program, "dual_pair")
     return program
 
 
@@ -765,7 +812,15 @@ def _depth_safe(eng: Engine, name: str) -> int:
 
 def _insert_before_emit(program: CapProgram, step: dict[str, Any]) -> None:
     op_name = str(step.get("op", ""))
-    if op_name and any(str(o.get("op", "")) == op_name for o in program.ops):
+    if op_name == "dual_answer":
+        into = str(step.get("into") or "dual")
+        if any(
+            str(o.get("op", "")) == "dual_answer"
+            and str(o.get("into") or "dual") == into
+            for o in program.ops
+        ):
+            return
+    elif op_name and any(str(o.get("op", "")) == op_name for o in program.ops):
         return
     emit_i = next(
         (i for i, o in enumerate(program.ops) if o.get("op") == "emit"),
