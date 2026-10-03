@@ -1370,6 +1370,21 @@ def candidate_opens_body_synthesize_domain(
     return bool(invent_touched_domains(ast) & under)
 
 
+def same_center_body_synthesize_complete(
+    mind_domains: Iterable[str],
+    body_domains: Iterable[str],
+) -> bool:
+    """#24: True when every mind-answered domain is invent-body synthesized.
+
+    Fail closed while any mind-answered seeded domain stays body-empty.
+    Requires multi-domain mind answers (≥2) so thermal-only tips do not
+    greenwash completeness.
+    """
+    mind = frozenset(mind_domains)
+    body = frozenset(body_domains)
+    return len(mind) >= 2 and bool(mind) and mind.issubset(body)
+
+
 def search_has_domain_miss_invent_candidate(
     eng: Engine,
     *,
@@ -1850,6 +1865,20 @@ def invent_and_embody(
             and proposal.edit
             and proposal.edit.get("kind") == "edit_ast"
         ):
+            # #24: do not burn an invent slot on topology/seed while a
+            # domain-opening invent remains for under-covered same-center domains.
+            # Compose/promote stay allowed — compositional invent must not be
+            # starved by the domain-miss completeness vehicle.
+            if (
+                proposal.source in {"topology", "seed"}
+                and form_productive_invent_landed(mind_store)
+                and search_has_domain_miss_invent_candidate(
+                    eng, mind_store=mind_store
+                )
+            ):
+                skipped_meet_only.add(normalize(proposal.instance))
+                proposal = None
+                continue
             break
         ok, pre, post, reason = _trial_search_edit(eng, proposal.edit)
         if ok and not search_has_product_exceed_candidate(eng):
@@ -1858,6 +1887,9 @@ def invent_and_embody(
                 mind_store
             )
             ast = list((proposal.edit or {}).get("ast") or [])
+            opens_domain = candidate_opens_body_synthesize_domain(
+                eng, mind_store, ast
+            )
             if not candidate_earns_distinct_form_product(
                 ast,
                 embodied_classes=embodied_classes,
@@ -1867,8 +1899,12 @@ def invent_and_embody(
                 effect=proposal.effect,
                 edit=proposal.edit,
             ):
-                ok = False
-                reason = "clone_form_flood"
+                # #24: domain-opening invents for under-covered same-center
+                # domains are not clone floods — specialty may repeat
+                # (dual_attach) while invent-touching a still body-empty domain.
+                if not opens_domain:
+                    ok = False
+                    reason = "clone_form_flood"
             # #20: when a mind-form-product expander remains, do not burn the
             # form budget on emit-only / zero-gain dual_attach.
             elif search_has_mind_form_product_invent_candidate(
@@ -1883,9 +1919,7 @@ def invent_and_embody(
                 and search_has_domain_miss_invent_candidate(
                     eng, mind_store=mind_store
                 )
-                and not candidate_opens_body_synthesize_domain(
-                    eng, mind_store, ast
-                )
+                and not opens_domain
             ):
                 ok = False
                 reason = "domain_miss_miss"

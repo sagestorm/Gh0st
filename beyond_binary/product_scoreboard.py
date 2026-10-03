@@ -15,6 +15,7 @@ from typing import Any
 from .center import (
     LivingCenter,
     StructuralScore,
+    MAX_DOMAIN_COMPLETE_FOLLOW_ONS,
     MAX_DOMAIN_MISS_FOLLOW_ONS,
     MAX_FOLLOW_ON_INVENTS,
     MAX_FORM_PRODUCTIVE_FOLLOW_ONS,
@@ -210,8 +211,8 @@ def _run_arm(
             # form, or domain-miss budget remains (usually empty after primary drain).
             from . import mind as mind_mod
 
-            # Non-rehang invents may be form or domain-miss; count form conservatively
-            # as already-spent when any non-rehang landed (primary path drained form).
+            # Non-rehang invents may be form, domain-miss, or domain-complete;
+            # count form conservatively as already-spent when any non-rehang landed.
             form_follow = (
                 MAX_FORM_PRODUCTIVE_FOLLOW_ONS
                 if invent_mod.form_productive_invent_landed(path)
@@ -223,12 +224,23 @@ def _run_arm(
             mind_domains = invent_mod.form_product_domains(
                 invent_mod.answerable_form_product_poles(eng)
             )
+            under = invent_mod.under_covered_body_synthesize_domains(eng, path)
+            # Domain-miss spent when cross-domain earned (body ≥2); completeness
+            # continues while under-covered same-center domains remain (#24).
             domain_miss_follow = (
                 MAX_DOMAIN_MISS_FOLLOW_ONS
                 if (
                     form_follow >= MAX_FORM_PRODUCTIVE_FOLLOW_ONS
                     and len(mind_domains) >= 2
                     and len(body_syn_domains) >= 2
+                )
+                else 0
+            )
+            domain_complete_follow = (
+                MAX_DOMAIN_COMPLETE_FOLLOW_ONS
+                if (
+                    domain_miss_follow >= MAX_DOMAIN_MISS_FOLLOW_ONS
+                    and not under
                 )
                 else 0
             )
@@ -253,6 +265,14 @@ def _run_arm(
                     and domain_miss_follow < MAX_DOMAIN_MISS_FOLLOW_ONS
                 ):
                     invent_kind = "domain_miss"
+                elif (
+                    invent_mod.search_has_domain_miss_invent_candidate(
+                        eng, mind_store=path
+                    )
+                    and domain_miss_follow >= MAX_DOMAIN_MISS_FOLLOW_ONS
+                    and domain_complete_follow < MAX_DOMAIN_COMPLETE_FOLLOW_ONS
+                ):
+                    invent_kind = "domain_complete"
                 else:
                     break
                 follow = mind_mod.invent_domain(
@@ -278,6 +298,8 @@ def _run_arm(
                     form_follow += 1
                 elif invent_kind == "domain_miss":
                     domain_miss_follow += 1
+                elif invent_kind == "domain_complete":
+                    domain_complete_follow += 1
         finally:
             if prev is None:
                 os.environ.pop(substrate_mod.ENV_FLAG, None)
@@ -569,6 +591,19 @@ def evaluate_product_exceed(
         exceeds.append("invent_body_synthesize_cross_domain")
         for domain in sorted(cross_domains):
             exceeds.append(f"invent_body_synthesize_cross_domain:{domain}")
+    # #24: complete same-center invent-body domain coverage vs Null — every
+    # mind-answered seeded domain must be invent-body synthesized. Fail closed
+    # while any remains body-empty; mind-only / cross-domain-2-of-3 insufficient.
+    search_complete = invent_mod.same_center_body_synthesize_complete(
+        mind_domains, body_domains
+    )
+    null_complete = invent_mod.same_center_body_synthesize_complete(
+        mind_domains, null_body_domains
+    )
+    if search_complete and not null_complete:
+        exceeds.append("invent_body_synthesize_domain_complete")
+        for domain in sorted(mind_domains):
+            exceeds.append(f"invent_body_synthesize_domain_complete:{domain}")
     return bool(exceeds), exceeds
 
 
@@ -663,6 +698,17 @@ def run_scoreboard(
             cross_domain_n
             - (1 if "invent_body_synthesize_cross_domain" in exceeds else 0),
         )
+        domain_complete_n = sum(
+            1
+            for e in exceeds
+            if e == "invent_body_synthesize_domain_complete"
+            or str(e).startswith("invent_body_synthesize_domain_complete:")
+        )
+        domain_complete_count = max(
+            0,
+            domain_complete_n
+            - (1 if "invent_body_synthesize_domain_complete" in exceeds else 0),
+        )
         return {
             "ok": ok,
             "meet_or_exceed": ok,
@@ -691,6 +737,7 @@ def run_scoreboard(
             "invent_body_synthesize_poles": list(body_syn_poles),
             "invent_body_synthesize_domains": body_syn_domains,
             "invent_body_synthesize_cross_domain_count": cross_domain_count,
+            "invent_body_synthesize_domain_complete_count": domain_complete_count,
             "exceeds": exceeds,
             "meet_only_invent": meet_only_invent,
             "invent_on_think": bool(search_arm.get("invent_on_think")),
